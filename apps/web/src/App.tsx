@@ -13,6 +13,7 @@ import {
   type StreamType,
   type CoWatchPlaybackState,
   type CoWatchMediaSource,
+  type VoiceEffectMode,
 } from '@curly-broccoli/shared';
 
 type ConnectionState = 'connecting' | 'open' | 'closed';
@@ -83,6 +84,12 @@ const RECONNECT_BASE_DELAY_MS = 1_000;
 const RECONNECT_MAX_DELAY_MS = 12_000;
 const SCREEN_P2P_PARTICIPANT_THRESHOLD = 6;
 const SCREEN_ADAPT_INTERVAL_MS = 4_000;
+const SOUNDBOARD_CLIPS: { id: string; label: string; frequency: number; durationMs: number }[] = [
+  { id: 'boing', label: 'Boing', frequency: 340, durationMs: 280 },
+  { id: 'sparkle', label: 'Sparkle', frequency: 520, durationMs: 220 },
+  { id: 'dramatic', label: 'Dramatic', frequency: 180, durationMs: 520 },
+];
+
 const SCREEN_PRESETS: Record<ScreenContentType, ScreenEncodingPreset> = {
   text: { maxBitrateBps: 600_000, maxFramerate: 8 },
   mixed: { maxBitrateBps: 1_200_000, maxFramerate: 15 },
@@ -223,6 +230,7 @@ export function App() {
   const processedLocalVoiceStreamRef = useRef<MediaStream | null>(null);
   const localAudioContextRef = useRef<AudioContext | null>(null);
   const localGainNodeRef = useRef<GainNode | null>(null);
+  const soundboardLimiterNodeRef = useRef<DynamicsCompressorNode | null>(null);
   const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const remoteAudioByUserIdRef = useRef<Map<string, HTMLAudioElement>>(new Map());
   const peerChannelByUserIdRef = useRef<Map<string, string>>(new Map());
@@ -279,6 +287,9 @@ export function App() {
   >({});
   const [voiceChannelId, setVoiceChannelId] = useState<string | null>(null);
   const [inputGain, setInputGain] = useState(100);
+  const [selectedVoiceEffect, setSelectedVoiceEffect] = useState<VoiceEffectMode>('none');
+  const [customSoundboardClip, setCustomSoundboardClip] = useState<{ name: string; data: AudioBuffer } | null>(null);
+  const [activeEffectByUserId, setActiveEffectByUserId] = useState<Record<string, VoiceEffectMode>>({});
   const [outputVolumeByUserId, setOutputVolumeByUserId] = useState<Record<string, number>>({});
   const [peerStateByUserId, setPeerStateByUserId] = useState<Record<string, PeerConnectionHealth>>(
     {},
@@ -372,6 +383,7 @@ export function App() {
     0,
   );
   const totalDmUnread = Object.values(dmUnreadCounts).reduce((sum, value) => sum + value, 0);
+  const activeServer = servers.find((server) => server.id === activeServerId) ?? null;
 
   useEffect(() => {
     activeChannelRef.current = activeChannelId;
@@ -872,10 +884,93 @@ export function App() {
     }
 
     localGainNodeRef.current = null;
+    soundboardLimiterNodeRef.current = null;
     localSpeakingAnalyserRef.current = null;
     localSpeakingDataRef.current = null;
     void localAudioContextRef.current?.close();
     localAudioContextRef.current = null;
+  }
+
+
+  function connectVoiceEffectChain(context: AudioContext, source: AudioNode, effect: VoiceEffectMode) {
+    if (effect === 'robot') {
+      const shaper = context.createWaveShaper();
+      shaper.curve = new Float32Array(Array.from({ length: 256 }, (_, i) => Math.tanh(((i - 128) / 96) * 2)));
+      source.connect(shaper);
+      return shaper as AudioNode;
+    }
+
+    if (effect === 'megaphone') {
+      const bandPass = context.createBiquadFilter();
+      bandPass.type = 'bandpass';
+      bandPass.frequency.value = 1400;
+      source.connect(bandPass);
+      return bandPass as AudioNode;
+    }
+
+    if (effect === 'pitch-shift') {
+      const highPass = context.createBiquadFilter();
+      highPass.type = 'highpass';
+      highPass.frequency.value = 260;
+      source.connect(highPass);
+      return highPass as AudioNode;
+    }
+
+    return source;
+  }
+
+  function triggerSoundboardSignal(clipId: string) {
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN || !activeChannelId) return;
+    socket.send(JSON.stringify({ type: 'soundboard:trigger', payload: { channelId: activeChannelId, clipId } }));
+  }
+
+  function playBuiltInClip(clipId: string) {
+    const context = localAudioContextRef.current;
+    const limiter = soundboardLimiterNodeRef.current;
+    const clip = SOUNDBOARD_CLIPS.find((entry) => entry.id === clipId);
+    if (!context || !limiter || !clip) return;
+
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.frequency.value = clip.frequency;
+    gain.gain.value = 0.0001;
+    oscillator.connect(gain);
+    gain.connect(limiter);
+    const now = context.currentTime;
+    gain.gain.exponentialRampToValueAtTime(0.45, now + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + clip.durationMs / 1000);
+    oscillator.start(now);
+    oscillator.stop(now + clip.durationMs / 1000 + 0.05);
+    triggerSoundboardSignal(clip.id);
+  }
+
+  async function handleCustomSoundUpload(file: File | null) {
+    if (!file) {
+      setCustomSoundboardClip(null);
+      return;
+    }
+
+    const context = localAudioContextRef.current;
+    if (!context) {
+      setError('Join voice before loading a custom sound clip.');
+      return;
+    }
+
+    const decoded = await context.decodeAudioData(await file.arrayBuffer());
+    setCustomSoundboardClip({ name: file.name, data: decoded });
+  }
+
+  function playCustomClip() {
+    const context = localAudioContextRef.current;
+    const limiter = soundboardLimiterNodeRef.current;
+    if (!context || !limiter || !customSoundboardClip) return;
+
+    const source = context.createBufferSource();
+    source.buffer = customSoundboardClip.data;
+    source.connect(limiter);
+    source.start();
+    triggerSoundboardSignal('custom-upload');
   }
 
   async function ensureLocalVoiceStream() {
@@ -908,13 +1003,20 @@ export function App() {
     gainNode.gain.value = inputGain / 100;
     const analyser = context.createAnalyser();
     analyser.fftSize = 512;
-    source.connect(gainNode);
+    const effectedSource = connectVoiceEffectChain(context, source, selectedVoiceEffect);
+    const limiter = context.createDynamicsCompressor();
+    limiter.threshold.value = -18;
+    limiter.ratio.value = 10;
+
+    effectedSource.connect(gainNode);
     gainNode.connect(analyser);
 
     const destination = context.createMediaStreamDestination();
     gainNode.connect(destination);
+    limiter.connect(destination);
 
     localGainNodeRef.current = gainNode;
+    soundboardLimiterNodeRef.current = limiter;
     localSpeakingAnalyserRef.current = analyser;
     localSpeakingDataRef.current = new Uint8Array(analyser.fftSize);
     processedLocalVoiceStreamRef.current = destination.stream;
@@ -1544,6 +1646,7 @@ export function App() {
 
         if (parsed.type === 'voice:participants') {
           voiceMetricsRef.current.joinSuccesses += 1;
+          setActiveEffectByUserId(Object.fromEntries(parsed.payload.participants.map((participant) => [participant.userId, participant.activeVoiceEffect ?? 'none'])));
           refreshVoiceDashboard();
           setVoiceParticipantsByChannel((prev) => ({
             ...prev,
@@ -1685,6 +1788,14 @@ export function App() {
           if (parsed.payload.state) {
             syncVideoToState(parsed.payload.state);
           }
+        }
+
+        if (parsed.type === 'voice:effect-state') {
+          setActiveEffectByUserId((current) => ({ ...current, [parsed.payload.userId]: parsed.payload.effect }));
+        }
+
+        if (parsed.type === 'soundboard:trigger') {
+          setSystemMessage(`${parsed.payload.username} played ${parsed.payload.clipId}.`);
         }
 
         if (parsed.type === 'voice:signal') {
@@ -2011,6 +2122,9 @@ export function App() {
       await ensureLocalVoiceStream();
       socket.send(
         JSON.stringify({ type: 'voice:join-channel', payload: { channelId: activeChannelId } }),
+      );
+      socket.send(
+        JSON.stringify({ type: 'voice:effect-state', payload: { channelId: activeChannelId, effect: selectedVoiceEffect } }),
       );
       setVoiceChannelId(activeChannelId);
       setError(null);
@@ -3036,6 +3150,51 @@ export function App() {
               </button>
             </div>
           )}
+
+          <section className="voice-panel">
+            <h3>Playful audio</h3>
+            <div className="voice-panel-actions">
+              <label>
+                Voice effect
+                <select
+                  value={selectedVoiceEffect}
+                  disabled={!activeServer?.voiceEffectsEnabled}
+                  onChange={(event) => {
+                    const effect = event.target.value as VoiceEffectMode;
+                    setSelectedVoiceEffect(effect);
+                    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN && activeChannelId) {
+                      socketRef.current.send(JSON.stringify({ type: 'voice:effect-state', payload: { channelId: activeChannelId, effect } }));
+                    }
+                  }}
+                >
+                  <option value="none">None</option>
+                  <option value="robot">Robot</option>
+                  <option value="megaphone">Megaphone</option>
+                  <option value="pitch-shift">Pitch shift</option>
+                </select>
+              </label>
+              <div className="voice-panel-actions">
+                {SOUNDBOARD_CLIPS.map((clip) => (
+                  <button
+                    key={clip.id}
+                    type="button"
+                    disabled={!activeServer?.soundboardEnabled || voiceChannelId !== activeChannelId}
+                    onClick={() => playBuiltInClip(clip.id)}
+                  >
+                    {clip.label}
+                  </button>
+                ))}
+              </div>
+              <label>
+                Custom clip
+                <input type="file" accept="audio/*" onChange={(event) => void handleCustomSoundUpload(event.target.files?.[0] ?? null)} />
+              </label>
+              <button type="button" onClick={playCustomClip} disabled={!customSoundboardClip || !activeServer?.soundboardEnabled}>
+                Play upload
+              </button>
+            </div>
+          </section>
+
           <div className="voice-controls">
             <label>
               Mic gain {inputGain}%
@@ -3058,6 +3217,9 @@ export function App() {
               .map((participant) => (
                 <span key={participant.userId} className="voice-chip">
                   {participant.username}
+                  {(activeEffectByUserId[participant.userId] ?? participant.activeVoiceEffect ?? 'none') !== 'none' && (
+                    <small className="subtle">fx:{activeEffectByUserId[participant.userId] ?? participant.activeVoiceEffect}</small>
+                  )}
                   <strong className="voice-state">
                     {peerStateByUserId[participant.userId] ?? 'connecting'}
                   </strong>
@@ -3384,6 +3546,48 @@ export function App() {
 
         <aside className="sidebar">
           <h3>Members</h3>
+          {isServerOwner && activeServer && (
+            <div className="voice-panel-actions">
+              <button
+                type="button"
+                onClick={() =>
+                  void authedFetch(`/servers/${activeServer.id}/audio-settings`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      soundboardEnabled: !activeServer.soundboardEnabled,
+                      voiceEffectsEnabled: activeServer.voiceEffectsEnabled,
+                    }),
+                  }).then(async (res) => {
+                    if (!res.ok) return;
+                    const data = (await res.json()) as { server: ServerSummary };
+                    setServers((current) => current.map((entry) => (entry.id === data.server.id ? data.server : entry)));
+                  })
+                }
+              >
+                Soundboard: {activeServer.soundboardEnabled ? 'On' : 'Off'}
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  void authedFetch(`/servers/${activeServer.id}/audio-settings`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      soundboardEnabled: activeServer.soundboardEnabled,
+                      voiceEffectsEnabled: !activeServer.voiceEffectsEnabled,
+                    }),
+                  }).then(async (res) => {
+                    if (!res.ok) return;
+                    const data = (await res.json()) as { server: ServerSummary };
+                    setServers((current) => current.map((entry) => (entry.id === data.server.id ? data.server : entry)));
+                  })
+                }
+              >
+                Voice effects: {activeServer.voiceEffectsEnabled ? 'On' : 'Off'}
+              </button>
+            </div>
+          )}
           <div className="list members-list">
             {members.map((member) => {
               const isOnline = Boolean(

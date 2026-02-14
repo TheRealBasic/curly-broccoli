@@ -84,7 +84,7 @@ function buildSignedInFetchMock() {
     const url = String(input);
     if (url.endsWith('/servers')) {
       return new Response(
-        JSON.stringify({ servers: [{ id: 'server-1', name: 'Main', ownerId: 'user-1' }] }),
+        JSON.stringify({ servers: [{ id: 'server-1', name: 'Main', ownerId: 'user-1', soundboardEnabled: true, voiceEffectsEnabled: true }] }),
         { status: 200 },
       );
     }

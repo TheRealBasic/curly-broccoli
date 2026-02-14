@@ -124,6 +124,11 @@ type AppDependencies = {
     canShare: boolean,
     actorUserId: string,
   ) => Promise<void>;
+  updateServerAudioSettings: (
+    serverId: string,
+    actorUserId: string,
+    input: { soundboardEnabled: boolean; voiceEffectsEnabled: boolean },
+  ) => Promise<ServerSummary>;
   listModerationAuditLogs: (
     serverId: string,
     userId: string,
@@ -1381,6 +1386,32 @@ export function createApp(deps: AppDependencies) {
       }
 
       res.status(403).json({ error: 'Only server owners can unmute members in this server.' });
+    }
+  });
+
+
+  app.patch('/servers/:serverId/audio-settings', async (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) {
+      return;
+    }
+
+    const serverId = req.params.serverId;
+    const soundboardEnabled = req.body?.soundboardEnabled;
+    const voiceEffectsEnabled = req.body?.voiceEffectsEnabled;
+    if (typeof soundboardEnabled !== 'boolean' || typeof voiceEffectsEnabled !== 'boolean') {
+      res.status(400).json({ error: 'soundboardEnabled and voiceEffectsEnabled must be booleans.' });
+      return;
+    }
+
+    try {
+      const server = await deps.updateServerAudioSettings(serverId, auth.userId, {
+        soundboardEnabled,
+        voiceEffectsEnabled,
+      });
+      res.json({ server });
+    } catch {
+      res.status(403).json({ error: 'Only server owners can update audio settings in this server.' });
     }
   });
 

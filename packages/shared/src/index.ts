@@ -26,6 +26,8 @@ export type ServerSummary = {
   id: string;
   name: string;
   ownerId: string;
+  soundboardEnabled: boolean;
+  voiceEffectsEnabled: boolean;
 };
 
 export type ChannelSummary = {
@@ -61,7 +63,10 @@ export type DmMessage = {
 export type VoiceParticipant = {
   userId: string;
   username: string;
+  activeVoiceEffect?: VoiceEffectMode;
 };
+
+export type VoiceEffectMode = 'none' | 'robot' | 'megaphone' | 'pitch-shift';
 
 export type StreamType = 'audio' | 'screen';
 
@@ -196,6 +201,14 @@ export type ClientEvent =
   | {
       type: 'watch:set-permissions';
       payload: { channelId: string; controllers: string[] };
+    }
+  | {
+      type: 'soundboard:trigger';
+      payload: { channelId: string; clipId: string };
+    }
+  | {
+      type: 'voice:effect-state';
+      payload: { channelId: string; effect: VoiceEffectMode };
     };
 
 export type ServerEvent =
@@ -379,6 +392,18 @@ export type ServerEvent =
   | {
       type: 'watch:state';
       payload: { channelId: string; state: CoWatchPlaybackState | null };
+    }
+  | {
+      type: 'soundboard:trigger';
+      payload: { channelId: string; userId: string; username: string; clipId: string };
+    }
+  | {
+      type: 'voice:effect-state';
+      payload: {
+        channelId: string;
+        userId: string;
+        effect: VoiceEffectMode;
+      };
     };
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -423,6 +448,27 @@ export function isValidClientEvent(value: unknown): value is ClientEvent {
       typeof payload.targetUserId === 'string' &&
       payload.targetUserId.trim().length > 0 &&
       isStreamType(payload.streamType)
+    );
+  }
+
+
+  if (value.type === 'soundboard:trigger') {
+    return (
+      typeof payload.channelId === 'string' &&
+      payload.channelId.trim().length > 0 &&
+      typeof payload.clipId === 'string' &&
+      payload.clipId.trim().length > 0
+    );
+  }
+
+  if (value.type === 'voice:effect-state') {
+    return (
+      typeof payload.channelId === 'string' &&
+      payload.channelId.trim().length > 0 &&
+      (payload.effect === 'none' ||
+        payload.effect === 'robot' ||
+        payload.effect === 'megaphone' ||
+        payload.effect === 'pitch-shift')
     );
   }
 

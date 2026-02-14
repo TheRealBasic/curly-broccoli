@@ -62,7 +62,7 @@ describe('App', () => {
       if (url.endsWith('/servers')) {
         return new Response(
           JSON.stringify({
-            servers: [{ id: 'server-1', name: 'Main', ownerId: 'user-1' }],
+            servers: [{ id: 'server-1', name: 'Main', ownerId: 'user-1', soundboardEnabled: true, voiceEffectsEnabled: true }],
           }),
           { status: 200 },
         );
@@ -158,7 +158,7 @@ describe('App', () => {
     const fetchMock = vi.fn(async (input: URL | RequestInfo) => {
       const url = String(input);
       if (url.endsWith('/servers')) {
-        return new Response(JSON.stringify({ servers: [{ id: 'server-1', name: 'Main', ownerId: 'user-1' }] }), { status: 200 });
+        return new Response(JSON.stringify({ servers: [{ id: 'server-1', name: 'Main', ownerId: 'user-1', soundboardEnabled: true, voiceEffectsEnabled: true }] }), { status: 200 });
       }
       if (url.includes('/servers/server-1/channels')) {
         return new Response(JSON.stringify({ channels: [{ id: 'channel-1', serverId: 'server-1', name: 'general' }] }), { status: 200 });
@@ -222,7 +222,7 @@ describe('App', () => {
       const url = String(input);
       if (url.endsWith('/servers')) {
         return new Response(
-          JSON.stringify({ servers: [{ id: 'server-1', name: 'Main', ownerId: 'user-1' }] }),
+          JSON.stringify({ servers: [{ id: 'server-1', name: 'Main', ownerId: 'user-1', soundboardEnabled: true, voiceEffectsEnabled: true }] }),
           { status: 200 },
         );
       }
@@ -324,7 +324,7 @@ describe('App', () => {
       const url = String(input);
       if (url.endsWith('/servers')) {
         return new Response(
-          JSON.stringify({ servers: [{ id: 'server-1', name: 'Main', ownerId: 'owner-1' }] }),
+          JSON.stringify({ servers: [{ id: 'server-1', name: 'Main', ownerId: 'owner-1', soundboardEnabled: true, voiceEffectsEnabled: true }] }),
           { status: 200 },
         );
       }
@@ -430,7 +430,7 @@ describe('App', () => {
     const fetchMock = vi.fn(async (input: URL | RequestInfo) => {
       const url = String(input);
       if (url.endsWith('/servers')) {
-        return new Response(JSON.stringify({ servers: [{ id: 'server-1', name: 'Main', ownerId: 'user-1' }] }), { status: 200 });
+        return new Response(JSON.stringify({ servers: [{ id: 'server-1', name: 'Main', ownerId: 'user-1', soundboardEnabled: true, voiceEffectsEnabled: true }] }), { status: 200 });
       }
       if (url.includes('/servers/server-1/channels')) {
         return new Response(JSON.stringify({ channels: [{ id: 'channel-1', serverId: 'server-1', name: 'general' }] }), { status: 200 });
@@ -535,7 +535,7 @@ describe('App', () => {
 
     const fetchMock = vi.fn(async (input: URL | RequestInfo) => {
       const url = String(input);
-      if (url.endsWith('/servers')) return new Response(JSON.stringify({ servers: [{ id: 'server-1', name: 'Main', ownerId: 'user-1' }] }), { status: 200 });
+      if (url.endsWith('/servers')) return new Response(JSON.stringify({ servers: [{ id: 'server-1', name: 'Main', ownerId: 'user-1', soundboardEnabled: true, voiceEffectsEnabled: true }] }), { status: 200 });
       if (url.includes('/servers/server-1/channels')) return new Response(JSON.stringify({ channels: [{ id: 'channel-1', serverId: 'server-1', name: 'general' }] }), { status: 200 });
       if (url.includes('/servers/server-1/members')) return new Response(JSON.stringify({ members: [{ userId: 'user-1', username: 'alice', role: 'owner', canShareScreen: true, isMuted: false }] }), { status: 200 });
       if (url.includes('/servers/server-1/audit-logs')) return new Response(JSON.stringify({ logs: [] }), { status: 200 });

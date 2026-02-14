@@ -1,4 +1,6 @@
-FROM node:20-alpine AS base
+ARG NODE_IMAGE=public.ecr.aws/docker/library/node:20-alpine
+
+FROM ${NODE_IMAGE} AS base
 WORKDIR /app
 RUN corepack enable
 
@@ -11,7 +13,7 @@ COPY packages/shared packages/shared
 COPY apps/api apps/api
 RUN pnpm --filter @curly-broccoli/shared build && pnpm --filter @curly-broccoli/api build
 
-FROM node:20-alpine AS runtime
+FROM ${NODE_IMAGE} AS runtime
 WORKDIR /app
 RUN corepack enable
 

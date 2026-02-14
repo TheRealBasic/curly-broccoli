@@ -58,8 +58,17 @@ type ModerationAuditLog = {
   createdAt: string;
 };
 
+type CursorPage<T> = {
+  messages: T[];
+  nextCursor: string | null;
+  prevCursor: string | null;
+};
+
 type AppDependencies = {
-  fetchRecentMessages: (channelId: string, limit?: number) => Promise<ChatMessage[]>;
+  fetchRecentMessages: (
+    channelId: string,
+    options?: { limit?: number; before?: string; after?: string; offset?: number },
+  ) => Promise<CursorPage<ChatMessage>>;
   updateMessageById: (
     messageId: string,
     actorUserId: string,
@@ -175,19 +184,20 @@ type AppDependencies = {
   listServerMembers: (serverId: string, userId: string) => Promise<ServerMember[]>;
   createOrGetDmThread: (userAId: string, userBId: string) => Promise<string>;
   listDmThreadsForUser: (userId: string) => Promise<DmThreadSummary[]>;
-  fetchRecentDmMessages: (threadId: string, limit?: number) => Promise<DmMessage[]>;
+  fetchRecentDmMessages: (
+    threadId: string,
+    options?: { limit?: number; before?: string; after?: string; offset?: number },
+  ) => Promise<CursorPage<DmMessage>>;
   searchChannelMessages: (
     channelId: string,
     query: string,
-    limit?: number,
-    offset?: number,
-  ) => Promise<ChatMessage[]>;
+    options?: { limit?: number; before?: string; after?: string; offset?: number },
+  ) => Promise<CursorPage<ChatMessage>>;
   searchDmMessages: (
     threadId: string,
     query: string,
-    limit?: number,
-    offset?: number,
-  ) => Promise<DmMessage[]>;
+    options?: { limit?: number; before?: string; after?: string; offset?: number },
+  ) => Promise<CursorPage<DmMessage>>;
   canAccessDmThread: (threadId: string, userId: string) => Promise<boolean>;
   canAccessChannel: (channelId: string, userId: string) => Promise<boolean>;
   createMessageAttachment: (attachment: {
@@ -610,8 +620,26 @@ export function createApp(deps: AppDependencies) {
       return;
     }
 
-    const messages = await deps.fetchRecentMessages(channelId, limit ?? undefined);
-    res.json({ messages });
+    const before = req.query.before === undefined ? undefined : String(req.query.before).trim();
+    const after = req.query.after === undefined ? undefined : String(req.query.after).trim();
+    const offset =
+      req.query.offset === undefined ? undefined : parseNonNegativeInt(req.query.offset, 1_000_000);
+    if (req.query.offset !== undefined && offset === null) {
+      res.status(400).json({ error: 'offset must be a non-negative integer.' });
+      return;
+    }
+
+    try {
+      const page = await deps.fetchRecentMessages(channelId, {
+        limit: limit ?? undefined,
+        before: before || undefined,
+        after: after || undefined,
+        offset: offset ?? undefined,
+      });
+      res.json(page);
+    } catch {
+      res.status(400).json({ error: 'Invalid before/after cursor.' });
+    }
   });
 
   app.get('/messages/search', async (req, res) => {
@@ -647,8 +675,20 @@ export function createApp(deps: AppDependencies) {
       return;
     }
 
-    const messages = await deps.searchChannelMessages(channelId, query, limit, offset);
-    res.json({ messages });
+    const before = req.query.before === undefined ? undefined : String(req.query.before).trim();
+    const after = req.query.after === undefined ? undefined : String(req.query.after).trim();
+
+    try {
+      const page = await deps.searchChannelMessages(channelId, query, {
+        limit,
+        offset,
+        before: before || undefined,
+        after: after || undefined,
+      });
+      res.json(page);
+    } catch {
+      res.status(400).json({ error: 'Invalid before/after cursor.' });
+    }
   });
 
   app.post('/uploads/images', async (req, res) => {
@@ -881,8 +921,26 @@ export function createApp(deps: AppDependencies) {
       return;
     }
 
-    const messages = await deps.fetchRecentDmMessages(threadId, limit ?? undefined);
-    res.json({ messages });
+    const before = req.query.before === undefined ? undefined : String(req.query.before).trim();
+    const after = req.query.after === undefined ? undefined : String(req.query.after).trim();
+    const offset =
+      req.query.offset === undefined ? undefined : parseNonNegativeInt(req.query.offset, 1_000_000);
+    if (req.query.offset !== undefined && offset === null) {
+      res.status(400).json({ error: 'offset must be a non-negative integer.' });
+      return;
+    }
+
+    try {
+      const page = await deps.fetchRecentDmMessages(threadId, {
+        limit: limit ?? undefined,
+        before: before || undefined,
+        after: after || undefined,
+        offset: offset ?? undefined,
+      });
+      res.json(page);
+    } catch {
+      res.status(400).json({ error: 'Invalid before/after cursor.' });
+    }
   });
 
   app.get('/dm/messages/search', async (req, res) => {
@@ -918,8 +976,20 @@ export function createApp(deps: AppDependencies) {
       return;
     }
 
-    const messages = await deps.searchDmMessages(threadId, query, limit, offset);
-    res.json({ messages });
+    const before = req.query.before === undefined ? undefined : String(req.query.before).trim();
+    const after = req.query.after === undefined ? undefined : String(req.query.after).trim();
+
+    try {
+      const page = await deps.searchDmMessages(threadId, query, {
+        limit,
+        offset,
+        before: before || undefined,
+        after: after || undefined,
+      });
+      res.json(page);
+    } catch {
+      res.status(400).json({ error: 'Invalid before/after cursor.' });
+    }
   });
 
   app.patch('/messages/:messageId', async (req, res) => {

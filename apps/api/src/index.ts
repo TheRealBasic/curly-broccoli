@@ -26,7 +26,9 @@ import {
   createUser,
   deleteMessageById,
   updateMessageById,
+  fetchDmMessagesPage,
   fetchRecentDmMessages,
+  fetchChannelMessagesPage,
   fetchRecentMessages,
   findRefreshToken,
   findUserById,
@@ -48,8 +50,8 @@ import {
   runMigrations,
   saveDmMessage,
   saveMessage,
-  searchChannelMessages,
-  searchDmMessages,
+  searchChannelMessagesPage,
+  searchDmMessagesPage,
   storeRefreshToken,
   writeModerationAuditLog,
 } from './db.js';
@@ -59,7 +61,7 @@ dotenv.config();
 const WEBSOCKET_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const port = Number(process.env.API_PORT ?? 4000);
 const app = createApp({
-  fetchRecentMessages,
+  fetchRecentMessages: fetchChannelMessagesPage,
   deleteMessageById,
   updateMessageById,
   reportMessageById,
@@ -83,9 +85,9 @@ const app = createApp({
   listServerMembers,
   createOrGetDmThread,
   listDmThreadsForUser,
-  fetchRecentDmMessages,
-  searchChannelMessages,
-  searchDmMessages,
+  fetchRecentDmMessages: fetchDmMessagesPage,
+  searchChannelMessages: searchChannelMessagesPage,
+  searchDmMessages: searchDmMessagesPage,
   canAccessDmThread,
   canAccessChannel,
   canManageScreenShare,

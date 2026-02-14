@@ -14,7 +14,9 @@ beforeAll(() => {
 });
 
 const baseDeps = {
-  fetchRecentMessages: vi.fn<(channelId: string) => Promise<ChatMessage[]>>().mockResolvedValue([]),
+  fetchRecentMessages: vi
+    .fn<(channelId: string) => Promise<{ messages: ChatMessage[]; nextCursor: string | null; prevCursor: string | null }>>()
+    .mockResolvedValue({ messages: [], nextCursor: null, prevCursor: null }),
   findUserByUsername: vi.fn(),
   findUserById: vi.fn(),
   createUser: vi.fn(),
@@ -30,11 +32,15 @@ const baseDeps = {
   listServerMembers: vi.fn().mockResolvedValue([]),
   createOrGetDmThread: vi.fn<() => Promise<string>>().mockResolvedValue('thread-1'),
   listDmThreadsForUser: vi.fn<() => Promise<DmThreadSummary[]>>().mockResolvedValue([]),
-  fetchRecentDmMessages: vi.fn<() => Promise<DmMessage[]>>().mockResolvedValue([]),
+  fetchRecentDmMessages: vi
+    .fn<() => Promise<{ messages: DmMessage[]; nextCursor: string | null; prevCursor: string | null }>>()
+    .mockResolvedValue({ messages: [], nextCursor: null, prevCursor: null }),
   searchChannelMessages: vi
-    .fn<(channelId: string) => Promise<ChatMessage[]>>()
-    .mockResolvedValue([]),
-  searchDmMessages: vi.fn<(threadId: string) => Promise<DmMessage[]>>().mockResolvedValue([]),
+    .fn<(channelId: string) => Promise<{ messages: ChatMessage[]; nextCursor: string | null; prevCursor: string | null }>>()
+    .mockResolvedValue({ messages: [], nextCursor: null, prevCursor: null }),
+  searchDmMessages: vi
+    .fn<(threadId: string) => Promise<{ messages: DmMessage[]; nextCursor: string | null; prevCursor: string | null }>>()
+    .mockResolvedValue({ messages: [], nextCursor: null, prevCursor: null }),
   canAccessDmThread: vi.fn<() => Promise<boolean>>().mockResolvedValue(true),
   canAccessChannel: vi.fn<() => Promise<boolean>>().mockResolvedValue(true),
   createMessageAttachment: vi.fn(),
@@ -169,8 +175,10 @@ describe('API permission checks', () => {
   it('allows channel history when user can access channel', async () => {
     const { createApp } = await import('../src/app.js');
     const fetchRecentMessages = vi
-      .fn<(channelId: string) => Promise<ChatMessage[]>>()
-      .mockResolvedValue([]);
+      .fn<
+        (channelId: string) => Promise<{ messages: ChatMessage[]; nextCursor: string | null; prevCursor: string | null }>
+      >()
+      .mockResolvedValue({ messages: [], nextCursor: null, prevCursor: null });
     const app = createApp({
       ...baseDeps,
       fetchRecentMessages,
@@ -183,7 +191,12 @@ describe('API permission checks', () => {
       .set('Authorization', `Bearer ${token}`);
 
     expect(res.status).toBe(200);
-    expect(fetchRecentMessages).toHaveBeenCalledWith('channel-1', undefined);
+    expect(fetchRecentMessages).toHaveBeenCalledWith('channel-1', {
+      limit: undefined,
+      before: undefined,
+      after: undefined,
+      offset: undefined,
+    });
   });
 
   it('blocks image uploads when user cannot access channel', async () => {
@@ -254,11 +267,10 @@ describe('API permission checks', () => {
         (
           channelId: string,
           query: string,
-          limit?: number,
-          offset?: number,
-        ) => Promise<ChatMessage[]>
+          options?: { limit?: number; before?: string; after?: string; offset?: number },
+        ) => Promise<{ messages: ChatMessage[]; nextCursor: string | null; prevCursor: string | null }>
       >()
-      .mockResolvedValue([]);
+      .mockResolvedValue({ messages: [], nextCursor: null, prevCursor: null });
     const app = createApp({
       ...baseDeps,
       searchChannelMessages,
@@ -270,7 +282,12 @@ describe('API permission checks', () => {
       .set('Authorization', `Bearer ${token}`);
 
     expect(res.status).toBe(200);
-    expect(searchChannelMessages).toHaveBeenCalledWith('channel-1', 'test', undefined, 0);
+    expect(searchChannelMessages).toHaveBeenCalledWith('channel-1', 'test', {
+      limit: undefined,
+      offset: 0,
+      before: undefined,
+      after: undefined,
+    });
   });
 
   it('unmutes a member and writes audit log', async () => {
@@ -360,4 +377,81 @@ describe('API permission checks', () => {
     expect(res.status).toBe(400);
   });
 
+});
+
+
+describe('Cursor pagination boundaries', () => {
+  it('returns cursor metadata when page has exact page size', async () => {
+    const { createApp } = await import('../src/app.js');
+    const messages = Array.from({ length: 2 }, (_, index) => ({
+      id: `message-${index}`,
+      channelId: 'channel-1',
+      userId: 'user-1',
+      user: 'alice',
+      text: `text-${index}`,
+      attachments: [],
+      createdAt: `2024-01-01T00:00:0${index}.000Z`,
+      editedAt: null,
+    } satisfies ChatMessage));
+    const searchChannelMessages = vi.fn().mockResolvedValue({
+      messages,
+      nextCursor: 'next-cursor',
+      prevCursor: 'prev-cursor',
+    });
+    const app = createApp({ ...baseDeps, searchChannelMessages });
+
+    const token = createAccessToken({ id: 'user-1', username: 'alice' });
+    const res = await request(app)
+      .get('/messages/search?channelId=channel-1&query=test&limit=2')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.nextCursor).toBe('next-cursor');
+    expect(res.body.prevCursor).toBe('prev-cursor');
+    expect(res.body.messages).toHaveLength(2);
+  });
+
+  it('passes duplicate timestamp cursor tokens without dropping records', async () => {
+    const { createApp } = await import('../src/app.js');
+    const searchDmMessages = vi.fn().mockResolvedValue({
+      messages: [],
+      nextCursor: null,
+      prevCursor: null,
+    });
+    const app = createApp({ ...baseDeps, searchDmMessages });
+
+    const token = createAccessToken({ id: 'user-1', username: 'alice' });
+    const before = Buffer.from('2024-01-01T00:00:00.000Z|00000000-0000-0000-0000-000000000001').toString(
+      'base64url',
+    );
+    const res = await request(app)
+      .get(`/dm/messages/search?threadId=thread-1&query=test&before=${before}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(searchDmMessages).toHaveBeenCalledWith('thread-1', 'test', {
+      limit: undefined,
+      offset: undefined,
+      before,
+      after: undefined,
+    });
+  });
+
+  it('returns empty page payload when no messages match', async () => {
+    const { createApp } = await import('../src/app.js');
+    const fetchRecentDmMessages = vi.fn().mockResolvedValue({
+      messages: [],
+      nextCursor: null,
+      prevCursor: null,
+    });
+    const app = createApp({ ...baseDeps, fetchRecentDmMessages });
+
+    const token = createAccessToken({ id: 'user-1', username: 'alice' });
+    const res = await request(app)
+      .get('/dm/messages?threadId=thread-1&limit=20')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ messages: [], nextCursor: null, prevCursor: null });
+  });
 });

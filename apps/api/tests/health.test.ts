@@ -39,10 +39,12 @@ const baseDeps = {
   canAccessChannel: vi.fn<() => Promise<boolean>>().mockResolvedValue(true),
   createMessageAttachment: vi.fn(),
   deleteMessageById: vi.fn(),
+  updateMessageById: vi.fn(),
   reportMessageById: vi.fn(),
   muteUserInServer: vi.fn(),
   listModerationAuditLogs: vi.fn().mockResolvedValue([]),
   writeModerationAuditLog: vi.fn(),
+  notifyMessageEdited: vi.fn(),
 };
 
 describe('GET /health', () => {
@@ -146,7 +148,6 @@ describe('POST /auth/register and /auth/login', () => {
   });
 });
 
-
 describe('API permission checks', () => {
   it('blocks channel history when user cannot access channel', async () => {
     const { createApp } = await import('../src/app.js');
@@ -165,7 +166,9 @@ describe('API permission checks', () => {
 
   it('allows channel history when user can access channel', async () => {
     const { createApp } = await import('../src/app.js');
-    const fetchRecentMessages = vi.fn<(channelId: string) => Promise<ChatMessage[]>>().mockResolvedValue([]);
+    const fetchRecentMessages = vi
+      .fn<(channelId: string) => Promise<ChatMessage[]>>()
+      .mockResolvedValue([]);
     const app = createApp({
       ...baseDeps,
       fetchRecentMessages,
@@ -202,10 +205,57 @@ describe('API permission checks', () => {
     expect(res.status).toBe(403);
   });
 
+  it('edits a message and writes audit log', async () => {
+    const { createApp } = await import('../src/app.js');
+    const updateMessageById = vi.fn().mockResolvedValue({
+      id: 'msg-1',
+      channel_id: 'channel-1',
+      server_id: 'server-1',
+      user_id: 'user-1',
+      user_name: 'alice',
+      text: 'edited text',
+      created_at: new Date().toISOString(),
+      edited_at: new Date('2024-01-01T00:00:00.000Z').toISOString(),
+      can_edit: true,
+    });
+    const writeModerationAuditLog = vi.fn().mockResolvedValue(undefined);
+    const notifyMessageEdited = vi.fn();
+    const app = createApp({
+      ...baseDeps,
+      updateMessageById,
+      writeModerationAuditLog,
+      notifyMessageEdited,
+    });
+
+    const token = createAccessToken({ id: 'user-1', username: 'alice' });
+    const res = await request(app)
+      .patch('/messages/msg-1')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ text: 'edited text' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.message.text).toBe('edited text');
+    expect(updateMessageById).toHaveBeenCalledWith('msg-1', 'user-1', 'edited text');
+    expect(writeModerationAuditLog).toHaveBeenCalled();
+    expect(notifyMessageEdited).toHaveBeenCalledWith({
+      channelId: 'channel-1',
+      messageId: 'msg-1',
+      text: 'edited text',
+      editedAt: '2024-01-01T00:00:00.000Z',
+    });
+  });
+
   it('accepts offset=0 for channel search pagination', async () => {
     const { createApp } = await import('../src/app.js');
     const searchChannelMessages = vi
-      .fn<(channelId: string, query: string, limit?: number, offset?: number) => Promise<ChatMessage[]>>()
+      .fn<
+        (
+          channelId: string,
+          query: string,
+          limit?: number,
+          offset?: number,
+        ) => Promise<ChatMessage[]>
+      >()
       .mockResolvedValue([]);
     const app = createApp({
       ...baseDeps,

@@ -204,6 +204,8 @@ export function App() {
   const [passwordInput, setPasswordInput] = useState('');
   const [connectionState, setConnectionState] = useState<ConnectionState>('closed');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState('');
   const [draft, setDraft] = useState('');
   const [systemMessage, setSystemMessage] = useState('Sign in to join chat.');
   const [error, setError] = useState<string | null>(null);
@@ -1143,6 +1145,18 @@ export function App() {
           }
         }
 
+        if (parsed.type === 'chat:message-edited') {
+          if (parsed.payload.channelId === activeChannelRef.current) {
+            setMessages((prev) =>
+              prev.map((message) =>
+                message.id === parsed.payload.messageId
+                  ? { ...message, text: parsed.payload.text, editedAt: parsed.payload.editedAt }
+                  : message,
+              ),
+            );
+          }
+        }
+
         if (parsed.type === 'dm:history') {
           if (parsed.payload.threadId === activeDmThreadRef.current) {
             setDmMessages(parsed.payload.messages);
@@ -2039,6 +2053,43 @@ export function App() {
     setError(null);
   }
 
+  async function editMessage(messageId: string) {
+    const text = editDraft.trim();
+    if (!text || text.length > 300) {
+      setError('Edited message must be between 1 and 300 characters.');
+      return;
+    }
+
+    const res = await authedFetch(`/messages/${messageId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+
+    if (!res.ok) {
+      setError('Unable to edit message.');
+      return;
+    }
+
+    const data = (await res.json()) as {
+      message: { id: string; channelId: string; text: string; editedAt: string };
+    };
+
+    setMessages((prev) =>
+      prev.map((message) =>
+        message.id === data.message.id
+          ? { ...message, text: data.message.text, editedAt: data.message.editedAt }
+          : message,
+      ),
+    );
+    setEditingMessageId(null);
+    setEditDraft('');
+    if (activeServerId) {
+      await loadAuditLogs(activeServerId);
+    }
+    setError(null);
+  }
+
   async function deleteMessage(messageId: string) {
     const res = await authedFetch(`/messages/${messageId}`, { method: 'DELETE' });
     if (!res.ok) {
@@ -2516,8 +2567,38 @@ export function App() {
                 <header>
                   <strong>{'user' in message ? message.user : message.senderUsername}</strong>
                   <time>{new Date(message.createdAt).toLocaleTimeString()}</time>
+                  {'editedAt' in message && message.editedAt && (
+                    <span className="subtle">(edited)</span>
+                  )}
                 </header>
-                <p>{renderMessageText(message.text, auth.user.username)}</p>
+                {'user' in message && editingMessageId === message.id ? (
+                  <form
+                    className="inline-form"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void editMessage(message.id);
+                    }}
+                  >
+                    <input
+                      aria-label="Edit message"
+                      value={editDraft}
+                      maxLength={300}
+                      onChange={(event) => setEditDraft(event.target.value)}
+                    />
+                    <button type="submit">Save</button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingMessageId(null);
+                        setEditDraft('');
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </form>
+                ) : (
+                  <p>{renderMessageText(message.text, auth.user.username)}</p>
+                )}
                 {'attachments' in message && message.attachments.length > 0 && (
                   <div className="attachment-grid">
                     {message.attachments.map((attachment) => (
@@ -2537,6 +2618,17 @@ export function App() {
                     <button type="button" onClick={() => reportMessage(message.id)}>
                       Report
                     </button>
+                    {message.userId === auth.user.id && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingMessageId(message.id);
+                          setEditDraft(message.text);
+                        }}
+                      >
+                        Edit
+                      </button>
+                    )}
                     {(message.userId === auth.user.id || isServerOwner) && (
                       <button type="button" onClick={() => deleteMessage(message.id)}>
                         Delete

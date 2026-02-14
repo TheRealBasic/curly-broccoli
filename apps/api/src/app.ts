@@ -50,13 +50,29 @@ type ModerationAuditLog = {
     | 'user_mute'
     | 'screen_share_start'
     | 'screen_share_stop'
-    | 'screen_share_force_stop';
+    | 'screen_share_force_stop'
+    | 'message_edit';
   details: unknown;
   createdAt: string;
 };
 
 type AppDependencies = {
   fetchRecentMessages: (channelId: string, limit?: number) => Promise<ChatMessage[]>;
+  updateMessageById: (
+    messageId: string,
+    actorUserId: string,
+    newText: string,
+  ) => Promise<{
+    id: string;
+    channel_id: string;
+    server_id: string;
+    user_id: string | null;
+    user_name: string;
+    text: string;
+    created_at: Date | string;
+    edited_at: Date | string | null;
+    can_edit: boolean;
+  } | null>;
   deleteMessageById: (
     messageId: string,
     actorUserId: string,
@@ -93,6 +109,12 @@ type AppDependencies = {
     userId: string,
     limit?: number,
   ) => Promise<ModerationAuditLog[]>;
+  notifyMessageEdited: (event: {
+    channelId: string;
+    messageId: string;
+    text: string;
+    editedAt: string;
+  }) => void;
   writeModerationAuditLog: (entry: {
     id: string;
     serverId: string;
@@ -100,12 +122,13 @@ type AppDependencies = {
     targetUserId?: string | null;
     messageId?: string | null;
     action:
-    | 'message_delete'
-    | 'message_report'
-    | 'user_mute'
-    | 'screen_share_start'
-    | 'screen_share_stop'
-    | 'screen_share_force_stop';
+      | 'message_delete'
+      | 'message_report'
+      | 'user_mute'
+      | 'screen_share_start'
+      | 'screen_share_stop'
+      | 'screen_share_force_stop'
+      | 'message_edit';
     details?: unknown;
   }) => Promise<void>;
   findUserByUsername: (username: string) => Promise<UserRecord | null>;
@@ -873,6 +896,59 @@ export function createApp(deps: AppDependencies) {
 
     const messages = await deps.searchDmMessages(threadId, query, limit, offset);
     res.json({ messages });
+  });
+
+  app.patch('/messages/:messageId', async (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) {
+      return;
+    }
+
+    const messageId = String(req.params.messageId ?? '').trim();
+    if (!messageId) {
+      res.status(400).json({ error: 'messageId is required.' });
+      return;
+    }
+
+    const text = String(req.body?.text ?? '').trim();
+    if (!text || text.length > 300) {
+      res.status(400).json({ error: 'text must be between 1 and 300 characters.' });
+      return;
+    }
+
+    const updated = await deps.updateMessageById(messageId, auth.userId, text);
+    if (!updated) {
+      res.status(404).json({ error: 'Message not found or you cannot edit it.' });
+      return;
+    }
+
+    await deps.writeModerationAuditLog({
+      id: randomUUID(),
+      serverId: updated.server_id,
+      actorUserId: auth.userId,
+      targetUserId: updated.user_id,
+      messageId: updated.id,
+      action: 'message_edit',
+      details: { channelId: updated.channel_id },
+    });
+
+    const editedAt = new Date(updated.edited_at ?? new Date()).toISOString();
+
+    deps.notifyMessageEdited({
+      channelId: updated.channel_id,
+      messageId: updated.id,
+      text: updated.text,
+      editedAt,
+    });
+
+    res.status(200).json({
+      message: {
+        id: updated.id,
+        channelId: updated.channel_id,
+        text: updated.text,
+        editedAt,
+      },
+    });
   });
 
   app.delete('/messages/:messageId', async (req, res) => {

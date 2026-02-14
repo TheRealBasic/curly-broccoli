@@ -34,6 +34,7 @@ type ChatMessageRow = {
   user_name: string;
   text: string;
   created_at: Date | string;
+  edited_at: Date | string | null;
 };
 
 type MessageAttachmentRow = {
@@ -102,6 +103,7 @@ type SearchMessageRow = {
   user_name: string;
   text: string;
   created_at: Date | string;
+  edited_at: Date | string | null;
 };
 
 type SearchDmMessageRow = {
@@ -132,6 +134,7 @@ function mapRow(row: ChatMessageRow, attachments: MessageAttachment[] = []): Cha
     text: row.text,
     attachments,
     createdAt: new Date(row.created_at).toISOString(),
+    editedAt: row.edited_at ? new Date(row.edited_at).toISOString() : null,
   };
 }
 
@@ -446,7 +449,12 @@ export async function listServerMembers(serverId: string, userId: string) {
 
   return result.rows.map(
     (row) =>
-      ({ userId: row.user_id, username: row.username, role: row.role, canShareScreen: row.can_share_screen }) satisfies ServerMember,
+      ({
+        userId: row.user_id,
+        username: row.username,
+        role: row.role,
+        canShareScreen: row.can_share_screen,
+      }) satisfies ServerMember,
   );
 }
 
@@ -476,7 +484,6 @@ export async function canAccessChannel(channelId: string, userId: string) {
 
   return Boolean(result.rowCount);
 }
-
 
 export async function canManageScreenShare(channelId: string, userId: string) {
   const result = await pool.query<{ role: 'owner' | 'member'; can_share_screen: boolean }>(
@@ -577,7 +584,7 @@ export async function saveMessage(message: {
       `
         INSERT INTO chat_messages (id, channel_id, user_id, user_name, text, created_at)
         VALUES ($1, $2, $3, $4, $5, $6)
-        RETURNING id, channel_id, user_id, user_name, text, created_at;
+        RETURNING id, channel_id, user_id, user_name, text, created_at, edited_at;
       `,
       [
         message.id,
@@ -619,7 +626,7 @@ export async function fetchRecentMessages(channelId: string, limit = chatHistory
   const safeLimit = Math.max(1, Math.min(limit, 500));
   const rows = await pool.query<ChatMessageRow>(
     `
-      SELECT id, channel_id, user_id, user_name, text, created_at
+      SELECT id, channel_id, user_id, user_name, text, created_at, edited_at
       FROM chat_messages
       WHERE channel_id = $1
       ORDER BY created_at DESC
@@ -633,6 +640,65 @@ export async function fetchRecentMessages(channelId: string, limit = chatHistory
     messages.map((message) => message.id),
   );
   return messages.map((message) => mapRow(message, attachmentsByMessageId.get(message.id) ?? []));
+}
+
+export async function updateMessageById(messageId: string, actorUserId: string, newText: string) {
+  const updated = await pool.query<{
+    id: string;
+    channel_id: string;
+    server_id: string;
+    user_id: string | null;
+    user_name: string;
+    text: string;
+    created_at: Date | string;
+    edited_at: Date | string | null;
+    can_edit: boolean;
+  }>(
+    `
+      WITH target AS (
+        SELECT
+          m.id,
+          m.channel_id,
+          c.server_id,
+          m.user_id,
+          m.user_name,
+          m.text,
+          m.created_at,
+          m.edited_at,
+          EXISTS (
+            SELECT 1
+            FROM server_memberships sm
+            WHERE sm.server_id = c.server_id
+              AND sm.user_id = $2
+              AND sm.role = 'owner'
+          ) OR m.user_id = $2 AS can_edit
+        FROM chat_messages m
+        INNER JOIN channels c ON c.id = m.channel_id
+        WHERE m.id = $1
+      ),
+      edited AS (
+        UPDATE chat_messages
+        SET text = $3, edited_at = NOW()
+        WHERE id = $1 AND EXISTS (SELECT 1 FROM target WHERE can_edit)
+        RETURNING id
+      )
+      SELECT
+        target.id,
+        target.channel_id,
+        target.server_id,
+        target.user_id,
+        target.user_name,
+        $3 AS text,
+        target.created_at,
+        NOW() AS edited_at,
+        target.can_edit
+      FROM target
+      INNER JOIN edited ON edited.id = target.id;
+    `,
+    [messageId, actorUserId, newText],
+  );
+
+  return updated.rows[0] ?? null;
 }
 
 export async function deleteMessageById(messageId: string, actorUserId: string) {
@@ -769,7 +835,8 @@ export async function writeModerationAuditLog(entry: {
     | 'user_mute'
     | 'screen_share_start'
     | 'screen_share_stop'
-    | 'screen_share_force_stop';
+    | 'screen_share_force_stop'
+    | 'message_edit';
   details?: unknown;
 }) {
   await pool.query(
@@ -810,7 +877,8 @@ export async function listModerationAuditLogs(serverId: string, userId: string, 
       | 'user_mute'
       | 'screen_share_start'
       | 'screen_share_stop'
-      | 'screen_share_force_stop';
+      | 'screen_share_force_stop'
+      | 'message_edit';
     details: unknown;
     created_at: Date | string;
   }>(
@@ -972,7 +1040,7 @@ export async function searchChannelMessages(
   const safeOffset = Math.max(0, Math.min(offset, 5_000));
   const rows = await pool.query<SearchMessageRow>(
     `
-      SELECT id, channel_id, user_id, user_name, text, created_at
+      SELECT id, channel_id, user_id, user_name, text, created_at, edited_at
       FROM chat_messages
       WHERE channel_id = $1
         AND to_tsvector('simple', coalesce(text, '')) @@ plainto_tsquery('simple', $2)

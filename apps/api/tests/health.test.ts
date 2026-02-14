@@ -63,6 +63,7 @@ const baseDeps = {
   muteUserInServer: vi.fn(),
   unmuteUserInServer: vi.fn(),
   updateMemberScreenSharePermission: vi.fn(),
+  updateServerAudioSettings: vi.fn(),
   listModerationAuditLogs: vi.fn().mockResolvedValue([]),
   writeModerationAuditLog: vi.fn(),
   notifyMessageEdited: vi.fn(),
@@ -594,5 +595,43 @@ describe('Unread marker APIs', () => {
 
     expect(res.status).toBe(204);
     expect(markDmThreadAsRead).toHaveBeenCalledWith('user-1', 'thread-1', undefined);
+  });
+});
+
+
+describe('server audio settings permissions', () => {
+  it('blocks non-owner audio settings updates', async () => {
+    const { createApp } = await import('../src/app.js');
+    const updateServerAudioSettings = vi.fn().mockRejectedValue(new Error('forbidden'));
+    const app = createApp({ ...baseDeps, updateServerAudioSettings });
+    const token = createAccessToken({ id: 'user-2', username: 'member' });
+
+    const res = await request(app)
+      .patch('/servers/server-1/audio-settings')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ soundboardEnabled: false, voiceEffectsEnabled: false });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('allows owner audio settings updates', async () => {
+    const { createApp } = await import('../src/app.js');
+    const updateServerAudioSettings = vi.fn().mockResolvedValue({
+      id: 'server-1',
+      name: 'Test',
+      ownerId: 'owner-1',
+      soundboardEnabled: false,
+      voiceEffectsEnabled: true,
+    });
+    const app = createApp({ ...baseDeps, updateServerAudioSettings });
+    const token = createAccessToken({ id: 'owner-1', username: 'owner' });
+
+    const res = await request(app)
+      .patch('/servers/server-1/audio-settings')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ soundboardEnabled: false, voiceEffectsEnabled: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body.server.soundboardEnabled).toBe(false);
   });
 });

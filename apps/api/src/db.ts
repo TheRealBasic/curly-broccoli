@@ -64,6 +64,8 @@ type ServerRow = {
   id: string;
   name: string;
   owner_id: string;
+  soundboard_enabled: boolean;
+  voice_effects_enabled: boolean;
 };
 
 type ChannelRow = {
@@ -425,13 +427,19 @@ export async function createServer(id: string, name: string, ownerId: string) {
     `
       INSERT INTO servers (id, name, owner_id)
       VALUES ($1, $2, $3)
-      RETURNING id, name, owner_id;
+      RETURNING id, name, owner_id, soundboard_enabled, voice_effects_enabled;
     `,
     [id, name, ownerId],
   );
 
   const server = inserted.rows[0];
-  return { id: server.id, name: server.name, ownerId: server.owner_id } satisfies ServerSummary;
+  return {
+    id: server.id,
+    name: server.name,
+    ownerId: server.owner_id,
+    soundboardEnabled: server.soundboard_enabled,
+    voiceEffectsEnabled: server.voice_effects_enabled,
+  } satisfies ServerSummary;
 }
 
 export async function addServerMembership(
@@ -452,7 +460,7 @@ export async function addServerMembership(
 export async function listServersForUser(userId: string) {
   const result = await pool.query<ServerRow>(
     `
-      SELECT s.id, s.name, s.owner_id
+      SELECT s.id, s.name, s.owner_id, s.soundboard_enabled, s.voice_effects_enabled
       FROM servers s
       INNER JOIN server_memberships sm ON sm.server_id = s.id
       WHERE sm.user_id = $1
@@ -462,7 +470,13 @@ export async function listServersForUser(userId: string) {
   );
 
   return result.rows.map(
-    (row) => ({ id: row.id, name: row.name, ownerId: row.owner_id }) satisfies ServerSummary,
+    (row) => ({
+      id: row.id,
+      name: row.name,
+      ownerId: row.owner_id,
+      soundboardEnabled: row.soundboard_enabled,
+      voiceEffectsEnabled: row.voice_effects_enabled,
+    }) satisfies ServerSummary,
   );
 }
 
@@ -616,6 +630,63 @@ export async function canManageScreenShare(channelId: string, userId: string) {
   };
 }
 
+
+export async function getServerAudioSettingsByChannel(channelId: string) {
+  const result = await pool.query<{ soundboard_enabled: boolean; voice_effects_enabled: boolean }>(
+    `
+      SELECT s.soundboard_enabled, s.voice_effects_enabled
+      FROM channels c
+      INNER JOIN servers s ON s.id = c.server_id
+      WHERE c.id = $1;
+    `,
+    [channelId],
+  );
+
+  const row = result.rows[0];
+  if (!row) {
+    return null;
+  }
+
+  return {
+    soundboardEnabled: row.soundboard_enabled,
+    voiceEffectsEnabled: row.voice_effects_enabled,
+  };
+}
+
+export async function updateServerAudioSettings(
+  serverId: string,
+  actorUserId: string,
+  input: { soundboardEnabled: boolean; voiceEffectsEnabled: boolean },
+) {
+  const actorRole = await getMembershipRole(serverId, actorUserId);
+  if (actorRole !== 'owner') {
+    throw new MembershipError('ACTOR_NOT_OWNER', 'Only owners can update server audio settings');
+  }
+
+  const updated = await pool.query<ServerRow>(
+    `
+      UPDATE servers
+      SET soundboard_enabled = $2,
+          voice_effects_enabled = $3
+      WHERE id = $1
+      RETURNING id, name, owner_id, soundboard_enabled, voice_effects_enabled;
+    `,
+    [serverId, input.soundboardEnabled, input.voiceEffectsEnabled],
+  );
+
+  const server = updated.rows[0];
+  if (!server) {
+    throw new MembershipError('TARGET_NOT_MEMBER', 'Server not found');
+  }
+
+  return {
+    id: server.id,
+    name: server.name,
+    ownerId: server.owner_id,
+    soundboardEnabled: server.soundboard_enabled,
+    voiceEffectsEnabled: server.voice_effects_enabled,
+  } satisfies ServerSummary;
+}
 export async function addMemberByUsername(serverId: string, username: string, actorUserId: string) {
   const actorRole = await getMembershipRole(serverId, actorUserId);
   if (actorRole !== 'owner') {

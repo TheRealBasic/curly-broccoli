@@ -81,6 +81,35 @@ describe('screen-share protocol validators', () => {
     ).toBe(true);
   });
 
+
+  it('validates playful audio event payload requirements', () => {
+    expect(
+      isValidClientEvent({
+        type: 'soundboard:trigger',
+        payload: { channelId: 'channel-1', clipId: 'boing' },
+      }),
+    ).toBe(true);
+    expect(
+      isValidClientEvent({
+        type: 'soundboard:trigger',
+        payload: { channelId: 'channel-1', clipId: '' },
+      }),
+    ).toBe(false);
+
+    expect(
+      isValidClientEvent({
+        type: 'voice:effect-state',
+        payload: { channelId: 'channel-1', effect: 'robot' },
+      }),
+    ).toBe(true);
+    expect(
+      isValidClientEvent({
+        type: 'voice:effect-state',
+        payload: { channelId: 'channel-1', effect: 'alien' },
+      }),
+    ).toBe(false);
+  });
+
   it('parses rollout stage with safe fallback', () => {
     expect(parseScreenShareRolloutStage('internal')).toBe('internal');
     expect(parseScreenShareRolloutStage('beta')).toBe('beta');

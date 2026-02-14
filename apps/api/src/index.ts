@@ -8,6 +8,7 @@ import {
   type DmMessage,
   type CoWatchPlaybackState,
   type ServerEvent,
+  type VoiceEffectMode,
   isValidClientEvent,
   parseScreenShareRolloutStage,
 } from '@curly-broccoli/shared';
@@ -60,6 +61,8 @@ import {
   storeRefreshToken,
   upsertChannelWatchSession,
   writeModerationAuditLog,
+  getServerAudioSettingsByChannel,
+  updateServerAudioSettings,
 } from './db.js';
 
 dotenv.config();
@@ -74,6 +77,7 @@ const app = createApp({
   muteUserInServer,
   unmuteUserInServer,
   updateMemberScreenSharePermission,
+  updateServerAudioSettings,
   listModerationAuditLogs,
   writeModerationAuditLog,
   findUserByUsername,
@@ -118,6 +122,8 @@ const server = http.createServer(app);
 
 const RATE_LIMIT_WINDOW_MS = 4_000;
 const RATE_LIMIT_MAX_MESSAGES = 6;
+const SOUNDBOARD_RATE_LIMIT_WINDOW_MS = 5_000;
+const SOUNDBOARD_RATE_LIMIT_MAX_EVENTS = 5;
 const clients = new Set<net.Socket>();
 const userByConnection = new Map<net.Socket, { userId: string; username: string }>();
 const activeChannelByConnection = new Map<net.Socket, string>();
@@ -125,6 +131,8 @@ const activeChannelByConnection = new Map<net.Socket, string>();
 const activeDmThreadByConnection = new Map<net.Socket, string>();
 const dmConnectionsByThread = new Map<string, Set<net.Socket>>();
 const sentTimestampsByConnection = new Map<net.Socket, number[]>();
+const soundboardTimestampsByConnection = new Map<net.Socket, number[]>();
+const voiceEffectByConnection = new Map<net.Socket, VoiceEffectMode>();
 const readBufferByConnection = new Map<net.Socket, Buffer>();
 const serversByConnection = new Map<net.Socket, Set<string>>();
 const connectionsByServer = new Map<string, Set<net.Socket>>();
@@ -327,6 +335,22 @@ function isRateLimited(socket: net.Socket) {
   return false;
 }
 
+
+function isSoundboardRateLimited(socket: net.Socket) {
+  const now = Date.now();
+  const timestamps = soundboardTimestampsByConnection.get(socket) ?? [];
+  const recent = timestamps.filter((value) => now - value <= SOUNDBOARD_RATE_LIMIT_WINDOW_MS);
+
+  if (recent.length >= SOUNDBOARD_RATE_LIMIT_MAX_EVENTS) {
+    soundboardTimestampsByConnection.set(socket, recent);
+    return true;
+  }
+
+  recent.push(now);
+  soundboardTimestampsByConnection.set(socket, recent);
+  return false;
+}
+
 function stopTypingForSocket(socket: net.Socket, channelId?: string) {
   const currentUser = userByConnection.get(socket);
   if (!currentUser) {
@@ -439,6 +463,7 @@ function listVoiceParticipants(channelId: string) {
     participantsByUserId.set(authUser.userId, {
       userId: authUser.userId,
       username: authUser.username,
+      activeVoiceEffect: voiceEffectByConnection.get(socket) ?? 'none',
     });
   }
 
@@ -594,6 +619,8 @@ function closeConnection(socket: net.Socket) {
   }
   activeDmThreadByConnection.delete(socket);
   sentTimestampsByConnection.delete(socket);
+  soundboardTimestampsByConnection.delete(socket);
+  voiceEffectByConnection.delete(socket);
   readBufferByConnection.delete(socket);
   serversByConnection.delete(socket);
 }
@@ -747,6 +774,7 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
 
     leaveVoiceChannel(socket);
     voiceChannelByConnection.set(socket, channelId);
+    voiceEffectByConnection.set(socket, voiceEffectByConnection.get(socket) ?? 'none');
     const sockets = voiceConnectionsByChannel.get(channelId) ?? new Set<net.Socket>();
     sockets.add(socket);
     voiceConnectionsByChannel.set(channelId, sockets);
@@ -1172,6 +1200,67 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
     return;
   }
 
+
+
+  if (event.type === 'soundboard:trigger') {
+    const currentUser = userByConnection.get(socket);
+    const channelId = event.payload?.channelId?.trim();
+    const clipId = event.payload?.clipId?.trim();
+    if (!currentUser || !channelId || !clipId) {
+      sendEvent(socket, { type: 'error', payload: { message: 'channelId and clipId are required.' } });
+      return;
+    }
+
+    if (voiceChannelByConnection.get(socket) !== channelId) {
+      sendEvent(socket, { type: 'error', payload: { message: 'Join voice before triggering soundboard clips.' } });
+      return;
+    }
+
+    if (isSoundboardRateLimited(socket)) {
+      sendEvent(socket, { type: 'error', payload: { message: 'Soundboard rate limit exceeded. Slow down.' } });
+      return;
+    }
+
+    const audioSettings = await getServerAudioSettingsByChannel(channelId);
+    if (!audioSettings?.soundboardEnabled) {
+      sendEvent(socket, { type: 'error', payload: { message: 'Soundboard is disabled by the server owner.' } });
+      return;
+    }
+
+    broadcastToChannel(channelId, {
+      type: 'soundboard:trigger',
+      payload: { channelId, userId: currentUser.userId, username: currentUser.username, clipId },
+    });
+    return;
+  }
+
+  if (event.type === 'voice:effect-state') {
+    const currentUser = userByConnection.get(socket);
+    const channelId = event.payload?.channelId?.trim();
+    const effect = event.payload?.effect;
+    if (!currentUser || !channelId || !effect) {
+      sendEvent(socket, { type: 'error', payload: { message: 'channelId and effect are required.' } });
+      return;
+    }
+
+    if (voiceChannelByConnection.get(socket) !== channelId) {
+      sendEvent(socket, { type: 'error', payload: { message: 'Join voice before updating effects.' } });
+      return;
+    }
+
+    const audioSettings = await getServerAudioSettingsByChannel(channelId);
+    if (!audioSettings?.voiceEffectsEnabled && effect !== 'none') {
+      sendEvent(socket, { type: 'error', payload: { message: 'Voice effects are disabled by the server owner.' } });
+      return;
+    }
+
+    voiceEffectByConnection.set(socket, effect);
+    broadcastToChannel(channelId, {
+      type: 'voice:effect-state',
+      payload: { channelId, userId: currentUser.userId, effect },
+    });
+    return;
+  }
 
   if (event.type === 'typing:start' || event.type === 'typing:stop') {
     const currentUser = userByConnection.get(socket);

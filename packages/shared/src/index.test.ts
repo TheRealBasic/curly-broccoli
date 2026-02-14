@@ -54,6 +54,33 @@ describe('screen-share protocol validators', () => {
     ).toBe(false);
   });
 
+
+  it('validates co-watch payload requirements', () => {
+    expect(
+      isValidClientEvent({
+        type: 'watch:start',
+        payload: {
+          channelId: 'channel-1',
+          media: { sourceType: 'url', url: 'https://example.com/video.mp4' },
+        },
+      }),
+    ).toBe(true);
+
+    expect(
+      isValidClientEvent({
+        type: 'watch:start',
+        payload: { channelId: 'channel-1', media: { sourceType: 'invalid', url: 'x' } },
+      }),
+    ).toBe(false);
+
+    expect(
+      isValidClientEvent({
+        type: 'watch:seek',
+        payload: { channelId: 'channel-1', paused: false, positionSec: 12 },
+      }),
+    ).toBe(true);
+  });
+
   it('parses rollout stage with safe fallback', () => {
     expect(parseScreenShareRolloutStage('internal')).toBe('internal');
     expect(parseScreenShareRolloutStage('beta')).toBe('beta');

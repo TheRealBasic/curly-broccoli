@@ -11,6 +11,7 @@ import type {
   MessageAttachment,
   ServerMember,
   ServerSummary,
+  type CoWatchPlaybackState,
 } from '@curly-broccoli/shared';
 
 const DEFAULT_HISTORY_LIMIT = 50;
@@ -88,6 +89,19 @@ type DmThreadRow = {
   last_message_at: Date | string | null;
 };
 
+
+
+type WatchSessionRow = {
+  channel_id: string;
+  host_user_id: string;
+  controllers: string[];
+  media_source_type: 'url' | 'upload';
+  media_url: string;
+  media_title: string | null;
+  paused: boolean;
+  position_sec: number;
+  last_event_at: Date | string;
+};
 type DmMessageRow = {
   id: string;
   thread_id: string;
@@ -1129,6 +1143,86 @@ export async function listModerationAuditLogs(serverId: string, userId: string, 
   }));
 }
 
+
+
+export async function upsertChannelWatchSession(channelId: string, state: CoWatchPlaybackState) {
+  await pool.query(
+    `
+      INSERT INTO channel_watch_sessions (
+        channel_id,
+        host_user_id,
+        controllers,
+        media_source_type,
+        media_url,
+        media_title,
+        paused,
+        position_sec,
+        last_event_at,
+        updated_at
+      )
+      VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, NOW())
+      ON CONFLICT (channel_id) DO UPDATE SET
+        host_user_id = EXCLUDED.host_user_id,
+        controllers = EXCLUDED.controllers,
+        media_source_type = EXCLUDED.media_source_type,
+        media_url = EXCLUDED.media_url,
+        media_title = EXCLUDED.media_title,
+        paused = EXCLUDED.paused,
+        position_sec = EXCLUDED.position_sec,
+        last_event_at = EXCLUDED.last_event_at,
+        updated_at = NOW();
+    `,
+    [
+      channelId,
+      state.hostUserId,
+      JSON.stringify(state.controllers),
+      state.media.sourceType,
+      state.media.url,
+      state.media.title ?? null,
+      state.paused,
+      state.positionSec,
+      state.lastEventAt,
+    ],
+  );
+}
+
+export async function getChannelWatchSession(channelId: string): Promise<CoWatchPlaybackState | null> {
+  const result = await pool.query<WatchSessionRow>(
+    `
+      SELECT
+        channel_id,
+        host_user_id,
+        controllers,
+        media_source_type,
+        media_url,
+        media_title,
+        paused,
+        position_sec,
+        last_event_at
+      FROM channel_watch_sessions
+      WHERE channel_id = $1;
+    `,
+    [channelId],
+  );
+
+  const row = result.rows[0];
+  if (!row) {
+    return null;
+  }
+
+  return {
+    hostUserId: row.host_user_id,
+    controllers: Array.isArray(row.controllers) ? row.controllers : [],
+    media: {
+      sourceType: row.media_source_type,
+      url: row.media_url,
+      title: row.media_title ?? undefined,
+    },
+    paused: row.paused,
+    positionSec: Number(row.position_sec) || 0,
+    lastEventAt: new Date(row.last_event_at).toISOString(),
+  };
+}
 export async function closeDb() {
   await pool.end();
 }

@@ -11,6 +11,8 @@ import {
   type AttachmentCategory,
   type ServerSummary,
   type StreamType,
+  type CoWatchPlaybackState,
+  type CoWatchMediaSource,
 } from '@curly-broccoli/shared';
 
 type ConnectionState = 'connecting' | 'open' | 'closed';
@@ -249,6 +251,8 @@ export function App() {
   const screenSenderByUserIdRef = useRef<Map<string, RTCRtpSender>>(new Map());
   const screenAdaptationIntervalRef = useRef<number | null>(null);
   const remoteScreenVideoRef = useRef<HTMLVideoElement | null>(null);
+  const watchVideoRef = useRef<HTMLVideoElement | null>(null);
+  const coWatchSuppressSyncRef = useRef(false);
 
   const [auth, setAuth] = useState<AuthState | null>(() => loadAuthState());
   const [authMode, setAuthMode] = useState<AuthMode>('login');
@@ -296,6 +300,10 @@ export function App() {
   const [remoteScreenStream, setRemoteScreenStream] = useState<MediaStream | null>(null);
   const [screenContentType, setScreenContentType] = useState<ScreenContentType>('mixed');
   const [screenNetworkQuality, setScreenNetworkQuality] = useState<'stable' | 'degraded'>('stable');
+  const [coWatchState, setCoWatchState] = useState<CoWatchPlaybackState | null>(null);
+  const [coWatchUrlInput, setCoWatchUrlInput] = useState('');
+  const [coWatchLocalMedia, setCoWatchLocalMedia] = useState<{ fileName: string; objectUrl: string } | null>(null);
+  const [coWatchAllowOthersControl, setCoWatchAllowOthersControl] = useState(false);
   const [activeServerId, setActiveServerId] = useState<string | null>(null);
   const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
   const [serverNameInput, setServerNameInput] = useState('');
@@ -356,6 +364,9 @@ export function App() {
   const displayedMessages = showingSearchResults ? searchResults : visibleMessages;
   const currentMember = members.find((member) => member.userId === auth?.user.id) ?? null;
   const isServerOwner = currentMember?.role === 'owner';
+  const canControlCoWatch = Boolean(
+    auth && (!coWatchState || coWatchState.hostUserId === auth.user.id || coWatchState.controllers.includes(auth.user.id)),
+  );
   const totalChannelUnread = Object.values(channelUnreadCounts).reduce(
     (sum, value) => sum + value,
     0,
@@ -364,6 +375,14 @@ export function App() {
 
   useEffect(() => {
     activeChannelRef.current = activeChannelId;
+  }, [activeChannelId]);
+
+  useEffect(() => {
+    if (!activeChannelId) {
+      return;
+    }
+
+    coWatchSend({ type: 'watch:state', payload: { channelId: activeChannelId } });
   }, [activeChannelId]);
 
   useEffect(() => {
@@ -1656,6 +1675,18 @@ export function App() {
           });
         }
 
+        if (parsed.type === 'watch:start' || parsed.type === 'watch:pause' || parsed.type === 'watch:seek') {
+          setCoWatchState(parsed.payload.state);
+          syncVideoToState(parsed.payload.state);
+        }
+
+        if (parsed.type === 'watch:state') {
+          setCoWatchState(parsed.payload.state);
+          if (parsed.payload.state) {
+            syncVideoToState(parsed.payload.state);
+          }
+        }
+
         if (parsed.type === 'voice:signal') {
           const { channelId, fromUserId, description, candidate } = parsed.payload;
           void (async () => {
@@ -1747,6 +1778,27 @@ export function App() {
       currentSocketRef.current = null;
     };
   }, [wsUrl, auth?.user.id, activeServerId]);
+
+  useEffect(() => {
+    const video = watchVideoRef.current;
+    if (!video) {
+      return;
+    }
+
+    const sourceUrl = coWatchState?.media.url;
+    if (!sourceUrl) {
+      video.removeAttribute('src');
+      video.load();
+      return;
+    }
+
+    if (video.src !== sourceUrl) {
+      video.src = sourceUrl;
+      video.load();
+    }
+
+    syncVideoToState(coWatchState);
+  }, [coWatchState]);
 
   useEffect(() => {
     const video = remoteScreenVideoRef.current;
@@ -2135,6 +2187,77 @@ export function App() {
     setDraft('');
     setPendingAttachmentUploads([]);
     setError(null);
+  }
+
+  function coWatchSend(event: object) {
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    socket.send(JSON.stringify(event));
+  }
+
+  function syncVideoToState(state: CoWatchPlaybackState) {
+    const video = watchVideoRef.current;
+    if (!video) {
+      return;
+    }
+
+    const expectedPosition =
+      state.paused ? state.positionSec : state.positionSec + Math.max(0, (Date.now() - Date.parse(state.lastEventAt)) / 1000);
+    const drift = Math.abs(video.currentTime - expectedPosition);
+
+    if (drift > 0.75) {
+      coWatchSuppressSyncRef.current = true;
+      video.currentTime = expectedPosition;
+      window.setTimeout(() => {
+        coWatchSuppressSyncRef.current = false;
+      }, 120);
+    }
+
+    if (state.paused && !video.paused) {
+      void video.pause();
+    }
+
+    if (!state.paused && video.paused) {
+      void video.play().catch(() => {
+        setError('Click on the page to allow co-watch media playback.');
+      });
+    }
+  }
+
+  function sendWatchStateEvent(type: 'watch:pause' | 'watch:seek', paused: boolean, positionSec: number) {
+    if (!activeChannelId) {
+      return;
+    }
+
+    coWatchSend({
+      type,
+      payload: {
+        channelId: activeChannelId,
+        paused,
+        positionSec,
+        eventAt: new Date().toISOString(),
+      },
+    });
+  }
+
+  function startCoWatchFromMedia(media: CoWatchMediaSource) {
+    if (!activeChannelId) {
+      setError('Choose a channel first.');
+      return;
+    }
+
+    coWatchSend({
+      type: 'watch:start',
+      payload: {
+        channelId: activeChannelId,
+        media,
+        paused: true,
+        positionSec: 0,
+        eventAt: new Date().toISOString(),
+      },
+    });
   }
 
   async function uploadAttachment(file: File) {
@@ -2720,6 +2843,159 @@ export function App() {
                   </button>
                 )}
             </div>
+          </section>
+
+          <section className="voice-panel">
+            <div>
+              <strong>Co-watch</strong>
+              <p className="subtle">Synchronized media viewing in this channel.</p>
+            </div>
+            <div className="inline-form">
+              <input
+                value={coWatchUrlInput}
+                onChange={(event) => setCoWatchUrlInput(event.target.value)}
+                placeholder="Paste media URL"
+              />
+              <button
+                type="button"
+                onClick={() =>
+                  startCoWatchFromMedia({ sourceType: 'url', url: coWatchUrlInput.trim(), title: coWatchUrlInput.trim() })
+                }
+                disabled={!coWatchUrlInput.trim() || !activeChannelId || !canControlCoWatch}
+              >
+                Load URL
+              </button>
+              <input
+                type="file"
+                accept="video/*,audio/*"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (!file) {
+                    return;
+                  }
+
+                  if (coWatchLocalMedia?.objectUrl) {
+                    URL.revokeObjectURL(coWatchLocalMedia.objectUrl);
+                  }
+
+                  const objectUrl = URL.createObjectURL(file);
+                  setCoWatchLocalMedia({ fileName: file.name, objectUrl });
+                  startCoWatchFromMedia({ sourceType: 'upload', url: objectUrl, title: file.name });
+                }}
+                disabled={!activeChannelId || !canControlCoWatch}
+              />
+            </div>
+            <div className="inline-form">
+              <button
+                type="button"
+                onClick={() => {
+                  const video = watchVideoRef.current;
+                  if (!video || !activeChannelId) {
+                    return;
+                  }
+                  sendWatchStateEvent('watch:pause', !video.paused, video.currentTime);
+                }}
+                disabled={!coWatchState || !canControlCoWatch}
+              >
+                {coWatchState?.paused ? 'Play' : 'Pause'}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const video = watchVideoRef.current;
+                  if (!video || !canControlCoWatch) {
+                    return;
+                  }
+                  sendWatchStateEvent('watch:seek', video.paused, Math.max(0, video.currentTime - 10));
+                }}
+                disabled={!coWatchState || !canControlCoWatch}
+              >
+                -10s
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const video = watchVideoRef.current;
+                  if (!video || !canControlCoWatch) {
+                    return;
+                  }
+                  sendWatchStateEvent('watch:seek', video.paused, video.currentTime + 10);
+                }}
+                disabled={!coWatchState || !canControlCoWatch}
+              >
+                +10s
+              </button>
+              {coWatchState && coWatchState.hostUserId === auth.user.id && voiceParticipants.find((participant) => participant.userId !== auth.user.id) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const target = voiceParticipants.find((participant) => participant.userId !== auth.user.id);
+                    if (!target || !activeChannelId) {
+                      return;
+                    }
+
+                    coWatchSend({
+                      type: 'watch:transfer-host',
+                      payload: { channelId: activeChannelId, targetUserId: target.userId },
+                    });
+                  }}
+                >
+                  Transfer host
+                </button>
+              )}
+              {coWatchState && coWatchState.hostUserId === auth.user.id && (
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={coWatchAllowOthersControl}
+                    onChange={(event) => {
+                      const checked = event.target.checked;
+                      setCoWatchAllowOthersControl(checked);
+                      const controllers = checked
+                        ? voiceParticipants.map((participant) => participant.userId).filter((userId) => userId !== auth.user.id)
+                        : [];
+                      coWatchSend({ type: 'watch:set-permissions', payload: { channelId: activeChannelId, controllers } });
+                    }}
+                  />
+                  Allow others to control
+                </label>
+              )}
+            </div>
+            {coWatchLocalMedia && <p className="subtle">Loaded local media: {coWatchLocalMedia.fileName}</p>}
+            {coWatchState && (
+              <video
+                ref={watchVideoRef}
+                controls
+                playsInline
+                onPause={() => {
+                  if (!canControlCoWatch || coWatchSuppressSyncRef.current) {
+                    return;
+                  }
+                  const video = watchVideoRef.current;
+                  if (video) {
+                    sendWatchStateEvent('watch:pause', true, video.currentTime);
+                  }
+                }}
+                onPlay={() => {
+                  if (!canControlCoWatch || coWatchSuppressSyncRef.current) {
+                    return;
+                  }
+                  const video = watchVideoRef.current;
+                  if (video) {
+                    sendWatchStateEvent('watch:pause', false, video.currentTime);
+                  }
+                }}
+                onSeeked={() => {
+                  if (!canControlCoWatch || coWatchSuppressSyncRef.current) {
+                    return;
+                  }
+                  const video = watchVideoRef.current;
+                  if (video) {
+                    sendWatchStateEvent('watch:seek', video.paused, video.currentTime);
+                  }
+                }}
+              />
+            )}
           </section>
 
           <div className="share-consent-card">

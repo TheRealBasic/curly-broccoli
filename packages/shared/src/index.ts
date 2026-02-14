@@ -65,6 +65,21 @@ export type VoiceParticipant = {
 
 export type StreamType = 'audio' | 'screen';
 
+export type CoWatchMediaSource = {
+  sourceType: 'url' | 'upload';
+  url: string;
+  title?: string;
+};
+
+export type CoWatchPlaybackState = {
+  media: CoWatchMediaSource;
+  paused: boolean;
+  positionSec: number;
+  lastEventAt: string;
+  hostUserId: string;
+  controllers: string[];
+};
+
 export const SCREEN_SHARE_ROLLOUT_STAGES = ['disabled', 'internal', 'beta', 'full'] as const;
 export type ScreenShareRolloutStage = (typeof SCREEN_SHARE_ROLLOUT_STAGES)[number];
 
@@ -151,6 +166,36 @@ export type ClientEvent =
           usernameFragment?: string | null;
         };
       };
+    }
+  | {
+      type: 'watch:start';
+      payload: {
+        channelId: string;
+        media: CoWatchMediaSource;
+        paused?: boolean;
+        positionSec?: number;
+        eventAt?: string;
+      };
+    }
+  | {
+      type: 'watch:pause';
+      payload: { channelId: string; paused: boolean; positionSec: number; eventAt?: string };
+    }
+  | {
+      type: 'watch:seek';
+      payload: { channelId: string; positionSec: number; paused: boolean; eventAt?: string };
+    }
+  | {
+      type: 'watch:state';
+      payload: { channelId: string };
+    }
+  | {
+      type: 'watch:transfer-host';
+      payload: { channelId: string; targetUserId: string };
+    }
+  | {
+      type: 'watch:set-permissions';
+      payload: { channelId: string; controllers: string[] };
     };
 
 export type ServerEvent =
@@ -318,6 +363,22 @@ export type ServerEvent =
         actorUserId: string;
         targetUserId?: string;
       };
+    }
+  | {
+      type: 'watch:start';
+      payload: { channelId: string; state: CoWatchPlaybackState };
+    }
+  | {
+      type: 'watch:pause';
+      payload: { channelId: string; state: CoWatchPlaybackState };
+    }
+  | {
+      type: 'watch:seek';
+      payload: { channelId: string; state: CoWatchPlaybackState };
+    }
+  | {
+      type: 'watch:state';
+      payload: { channelId: string; state: CoWatchPlaybackState | null };
     };
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -362,6 +423,59 @@ export function isValidClientEvent(value: unknown): value is ClientEvent {
       typeof payload.targetUserId === 'string' &&
       payload.targetUserId.trim().length > 0 &&
       isStreamType(payload.streamType)
+    );
+  }
+
+  if (value.type === 'watch:start') {
+    return (
+      typeof payload.channelId === 'string' &&
+      payload.channelId.trim().length > 0 &&
+      isObject(payload.media) &&
+      typeof payload.media.url === 'string' &&
+      payload.media.url.trim().length > 0 &&
+      (payload.media.sourceType === 'url' || payload.media.sourceType === 'upload')
+    );
+  }
+
+  if (value.type === 'watch:pause') {
+    return (
+      typeof payload.channelId === 'string' &&
+      payload.channelId.trim().length > 0 &&
+      typeof payload.paused === 'boolean' &&
+      typeof payload.positionSec === 'number' &&
+      Number.isFinite(payload.positionSec)
+    );
+  }
+
+  if (value.type === 'watch:seek') {
+    return (
+      typeof payload.channelId === 'string' &&
+      payload.channelId.trim().length > 0 &&
+      typeof payload.paused === 'boolean' &&
+      typeof payload.positionSec === 'number' &&
+      Number.isFinite(payload.positionSec)
+    );
+  }
+
+  if (value.type === 'watch:state') {
+    return typeof payload.channelId === 'string' && payload.channelId.trim().length > 0;
+  }
+
+  if (value.type === 'watch:transfer-host') {
+    return (
+      typeof payload.channelId === 'string' &&
+      payload.channelId.trim().length > 0 &&
+      typeof payload.targetUserId === 'string' &&
+      payload.targetUserId.trim().length > 0
+    );
+  }
+
+  if (value.type === 'watch:set-permissions') {
+    return (
+      typeof payload.channelId === 'string' &&
+      payload.channelId.trim().length > 0 &&
+      Array.isArray(payload.controllers) &&
+      payload.controllers.every((controller) => typeof controller === 'string')
     );
   }
 

@@ -62,7 +62,9 @@ import {
   upsertChannelWatchSession,
   writeModerationAuditLog,
   getServerAudioSettingsByChannel,
+  getServerAiSettings,
   updateServerAudioSettings,
+  updateServerAiSettings,
 } from './db.js';
 
 dotenv.config();
@@ -78,6 +80,8 @@ const app = createApp({
   unmuteUserInServer,
   updateMemberScreenSharePermission,
   updateServerAudioSettings,
+  getServerAiSettings,
+  updateServerAiSettings,
   listModerationAuditLogs,
   writeModerationAuditLog,
   findUserByUsername,

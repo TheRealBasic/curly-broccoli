@@ -129,6 +129,35 @@ type AppDependencies = {
     actorUserId: string,
     input: { soundboardEnabled: boolean; voiceEffectsEnabled: boolean },
   ) => Promise<ServerSummary>;
+  getServerAiSettings: (serverId: string) => Promise<{
+    serverId: string;
+    enabled: boolean;
+    model: string;
+    systemPrompt: string | null;
+    maxTokensPerReply: number | null;
+    temperature: number | null;
+    allowDmInvocation: boolean;
+  } | null>;
+  updateServerAiSettings: (
+    serverId: string,
+    actorUserId: string,
+    patch: {
+      enabled?: boolean;
+      model?: string;
+      systemPrompt?: string | null;
+      maxTokensPerReply?: number | null;
+      temperature?: number | null;
+      allowDmInvocation?: boolean;
+    },
+  ) => Promise<{
+    serverId: string;
+    enabled: boolean;
+    model: string;
+    systemPrompt: string | null;
+    maxTokensPerReply: number | null;
+    temperature: number | null;
+    allowDmInvocation: boolean;
+  }>;
   listModerationAuditLogs: (
     serverId: string,
     userId: string,
@@ -1429,6 +1458,105 @@ export function createApp(deps: AppDependencies) {
       res.json({ server });
     } catch {
       res.status(403).json({ error: 'Only server owners can update audio settings in this server.' });
+    }
+  });
+
+  app.get('/servers/:serverId/ai-settings', async (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) {
+      return;
+    }
+
+    try {
+      await deps.listServerMembers(req.params.serverId, auth.userId);
+    } catch {
+      res.status(403).json({ error: 'You are not a member of this server.' });
+      return;
+    }
+
+    const settings = await deps.getServerAiSettings(req.params.serverId);
+    if (!settings) {
+      res.status(404).json({ error: 'Server not found.' });
+      return;
+    }
+
+    res.json({ settings });
+  });
+
+  app.patch('/servers/:serverId/ai-settings', async (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) {
+      return;
+    }
+
+    const patch: {
+      enabled?: boolean;
+      model?: string;
+      systemPrompt?: string | null;
+      maxTokensPerReply?: number | null;
+      temperature?: number | null;
+      allowDmInvocation?: boolean;
+    } = {};
+
+    if ('enabled' in req.body) {
+      if (typeof req.body.enabled !== 'boolean') {
+        res.status(400).json({ error: 'enabled must be a boolean.' });
+        return;
+      }
+      patch.enabled = req.body.enabled;
+    }
+
+    if ('model' in req.body) {
+      if (typeof req.body.model !== 'string' || req.body.model.trim().length === 0) {
+        res.status(400).json({ error: 'model must be a non-empty string.' });
+        return;
+      }
+      patch.model = req.body.model.trim();
+    }
+
+    if ('systemPrompt' in req.body) {
+      if (req.body.systemPrompt !== null && typeof req.body.systemPrompt !== 'string') {
+        res.status(400).json({ error: 'systemPrompt must be a string or null.' });
+        return;
+      }
+      patch.systemPrompt = req.body.systemPrompt;
+    }
+
+    if ('maxTokensPerReply' in req.body) {
+      if (req.body.maxTokensPerReply !== null && (!Number.isInteger(req.body.maxTokensPerReply) || req.body.maxTokensPerReply <= 0)) {
+        res.status(400).json({ error: 'maxTokensPerReply must be a positive integer or null.' });
+        return;
+      }
+      patch.maxTokensPerReply = req.body.maxTokensPerReply;
+    }
+
+    if ('temperature' in req.body) {
+      if (req.body.temperature !== null && (typeof req.body.temperature !== 'number' || Number.isNaN(req.body.temperature))) {
+        res.status(400).json({ error: 'temperature must be a number or null.' });
+        return;
+      }
+      patch.temperature = req.body.temperature;
+    }
+
+    if ('allowDmInvocation' in req.body) {
+      if (typeof req.body.allowDmInvocation !== 'boolean') {
+        res.status(400).json({ error: 'allowDmInvocation must be a boolean.' });
+        return;
+      }
+      patch.allowDmInvocation = req.body.allowDmInvocation;
+    }
+
+    try {
+      const settings = await deps.updateServerAiSettings(req.params.serverId, auth.userId, patch);
+      res.json({ settings });
+    } catch (error) {
+      const status = resolveMembershipErrorStatus(error);
+      if (status === 404) {
+        res.status(404).json({ error: 'Server not found.' });
+        return;
+      }
+
+      res.status(403).json({ error: 'Only server owners can update AI settings in this server.' });
     }
   });
 

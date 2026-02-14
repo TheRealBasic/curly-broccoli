@@ -68,6 +68,16 @@ type ServerRow = {
   voice_effects_enabled: boolean;
 };
 
+type ServerAiSettingsRow = {
+  server_id: string;
+  enabled: boolean;
+  model: string;
+  system_prompt: string | null;
+  max_tokens_per_reply: number | null;
+  temperature: string | number | null;
+  allow_dm_invocation: boolean;
+};
+
 type ChannelRow = {
   id: string;
   server_id: string;
@@ -148,6 +158,25 @@ export type UnreadSummary = {
   dmThreads: Record<string, number>;
   totalChannels: number;
   totalDmThreads: number;
+};
+
+export type ServerAiSettings = {
+  serverId: string;
+  enabled: boolean;
+  model: string;
+  systemPrompt: string | null;
+  maxTokensPerReply: number | null;
+  temperature: number | null;
+  allowDmInvocation: boolean;
+};
+
+type UpdateServerAiSettingsPatch = {
+  enabled?: boolean;
+  model?: string;
+  systemPrompt?: string | null;
+  maxTokensPerReply?: number | null;
+  temperature?: number | null;
+  allowDmInvocation?: boolean;
 };
 
 type CursorPaginationOptions = {
@@ -687,6 +716,122 @@ export async function updateServerAudioSettings(
     voiceEffectsEnabled: server.voice_effects_enabled,
   } satisfies ServerSummary;
 }
+
+function mapServerAiSettingsRow(row: ServerAiSettingsRow): ServerAiSettings {
+  return {
+    serverId: row.server_id,
+    enabled: row.enabled,
+    model: row.model,
+    systemPrompt: row.system_prompt,
+    maxTokensPerReply: row.max_tokens_per_reply,
+    temperature: row.temperature === null ? null : Number(row.temperature),
+    allowDmInvocation: row.allow_dm_invocation,
+  };
+}
+
+export async function getServerAiSettings(serverId: string) {
+  const result = await pool.query<ServerAiSettingsRow>(
+    `
+      SELECT s.id AS server_id,
+             COALESCE(sas.enabled, FALSE) AS enabled,
+             COALESCE(sas.model, 'gpt-4.1-mini') AS model,
+             sas.system_prompt,
+             sas.max_tokens_per_reply,
+             sas.temperature,
+             COALESCE(sas.allow_dm_invocation, FALSE) AS allow_dm_invocation
+      FROM servers s
+      LEFT JOIN server_ai_settings sas ON sas.server_id = s.id
+      WHERE s.id = $1;
+    `,
+    [serverId],
+  );
+
+  const row = result.rows[0];
+  if (!row) {
+    return null;
+  }
+
+  return mapServerAiSettingsRow(row);
+}
+
+export async function updateServerAiSettings(
+  serverId: string,
+  actorUserId: string,
+  patch: UpdateServerAiSettingsPatch,
+) {
+  const actorRole = await getMembershipRole(serverId, actorUserId);
+  if (actorRole !== 'owner') {
+    throw new MembershipError('ACTOR_NOT_OWNER', 'Only owners can update server AI settings');
+  }
+
+  await pool.query(
+    `
+      INSERT INTO server_ai_settings (server_id)
+      VALUES ($1)
+      ON CONFLICT (server_id) DO NOTHING;
+    `,
+    [serverId],
+  );
+
+  const assignments: string[] = [];
+  const values: Array<string | boolean | number | null> = [serverId];
+
+  if (patch.enabled !== undefined) {
+    assignments.push(`enabled = $${values.length + 1}`);
+    values.push(patch.enabled);
+  }
+
+  if (patch.model !== undefined) {
+    assignments.push(`model = $${values.length + 1}`);
+    values.push(patch.model);
+  }
+
+  if (patch.systemPrompt !== undefined) {
+    assignments.push(`system_prompt = $${values.length + 1}`);
+    values.push(patch.systemPrompt);
+  }
+
+  if (patch.maxTokensPerReply !== undefined) {
+    assignments.push(`max_tokens_per_reply = $${values.length + 1}`);
+    values.push(patch.maxTokensPerReply);
+  }
+
+  if (patch.temperature !== undefined) {
+    assignments.push(`temperature = $${values.length + 1}`);
+    values.push(patch.temperature);
+  }
+
+  if (patch.allowDmInvocation !== undefined) {
+    assignments.push(`allow_dm_invocation = $${values.length + 1}`);
+    values.push(patch.allowDmInvocation);
+  }
+
+  if (assignments.length === 0) {
+    const existing = await getServerAiSettings(serverId);
+    if (!existing) {
+      throw new MembershipError('TARGET_NOT_MEMBER', 'Server not found');
+    }
+    return existing;
+  }
+
+  const updated = await pool.query<ServerAiSettingsRow>(
+    `
+      UPDATE server_ai_settings
+      SET ${assignments.join(', ')}
+      WHERE server_id = $1
+      RETURNING server_id, enabled, model, system_prompt, max_tokens_per_reply, temperature, allow_dm_invocation;
+    `,
+    values,
+  );
+
+  const row = updated.rows[0];
+  if (!row) {
+    throw new MembershipError('TARGET_NOT_MEMBER', 'Server not found');
+  }
+
+  return mapServerAiSettingsRow(row);
+}
+
 export async function addMemberByUsername(serverId: string, username: string, actorUserId: string) {
   const actorRole = await getMembershipRole(serverId, actorUserId);
   if (actorRole !== 'owner') {

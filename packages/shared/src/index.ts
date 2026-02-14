@@ -225,6 +225,15 @@ export type ServerEvent =
       payload: { message: ChatMessage };
     }
   | {
+      type: 'chat:bot-pending';
+      payload: {
+        channelId: string;
+        requestId: string;
+        requestedByUserId: string;
+        botDisplayName: string;
+      };
+    }
+  | {
       type: 'chat:message-edited';
       payload: { channelId: string; messageId: string; text: string; editedAt: string };
     }

@@ -71,6 +71,7 @@ type ServerRow = {
 type ServerAiSettingsRow = {
   server_id: string;
   enabled: boolean;
+  bot_display_name: string;
   model: string;
   system_prompt: string | null;
   max_tokens_per_reply: number | null;
@@ -163,6 +164,7 @@ export type UnreadSummary = {
 export type ServerAiSettings = {
   serverId: string;
   enabled: boolean;
+  botDisplayName: string;
   model: string;
   systemPrompt: string | null;
   maxTokensPerReply: number | null;
@@ -172,6 +174,7 @@ export type ServerAiSettings = {
 
 type UpdateServerAiSettingsPatch = {
   enabled?: boolean;
+  botDisplayName?: string;
   model?: string;
   systemPrompt?: string | null;
   maxTokensPerReply?: number | null;
@@ -721,6 +724,7 @@ function mapServerAiSettingsRow(row: ServerAiSettingsRow): ServerAiSettings {
   return {
     serverId: row.server_id,
     enabled: row.enabled,
+    botDisplayName: row.bot_display_name,
     model: row.model,
     systemPrompt: row.system_prompt,
     maxTokensPerReply: row.max_tokens_per_reply,
@@ -734,6 +738,7 @@ export async function getServerAiSettings(serverId: string) {
     `
       SELECT s.id AS server_id,
              COALESCE(sas.enabled, FALSE) AS enabled,
+             COALESCE(NULLIF(TRIM(sas.bot_display_name), ''), 'assistant') AS bot_display_name,
              COALESCE(sas.model, 'gpt-4.1-mini') AS model,
              sas.system_prompt,
              sas.max_tokens_per_reply,
@@ -781,6 +786,11 @@ export async function updateServerAiSettings(
     values.push(patch.enabled);
   }
 
+  if (patch.botDisplayName !== undefined) {
+    assignments.push(`bot_display_name = $${values.length + 1}`);
+    values.push(patch.botDisplayName);
+  }
+
   if (patch.model !== undefined) {
     assignments.push(`model = $${values.length + 1}`);
     values.push(patch.model);
@@ -819,7 +829,7 @@ export async function updateServerAiSettings(
       UPDATE server_ai_settings
       SET ${assignments.join(', ')}
       WHERE server_id = $1
-      RETURNING server_id, enabled, model, system_prompt, max_tokens_per_reply, temperature, allow_dm_invocation;
+      RETURNING server_id, enabled, bot_display_name, model, system_prompt, max_tokens_per_reply, temperature, allow_dm_invocation;
     `,
     values,
   );

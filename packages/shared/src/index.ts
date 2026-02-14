@@ -57,6 +57,8 @@ export type VoiceParticipant = {
   username: string;
 };
 
+export type StreamType = 'audio' | 'screen';
+
 export type ClientEvent =
   | {
       type: 'chat:join-channel';
@@ -103,8 +105,32 @@ export type ClientEvent =
       payload: {
         channelId: string;
         targetUserId: string;
+        streamType?: StreamType;
         description?: { type: string; sdp?: string };
         iceRestart?: boolean;
+        candidate?: {
+          candidate: string;
+          sdpMid?: string | null;
+          sdpMLineIndex?: number | null;
+          usernameFragment?: string | null;
+        };
+      };
+    }
+  | {
+      type: 'screen:share-start';
+      payload: { channelId: string };
+    }
+  | {
+      type: 'screen:share-stop';
+      payload: { channelId: string };
+    }
+  | {
+      type: 'screen:signal';
+      payload: {
+        channelId: string;
+        targetUserId: string;
+        streamType: StreamType;
+        description?: { type: string; sdp?: string };
         candidate?: {
           candidate: string;
           sdpMid?: string | null;
@@ -209,6 +235,7 @@ export type ServerEvent =
       payload: {
         channelId: string;
         fromUserId: string;
+        streamType?: StreamType;
         description?: { type: string; sdp?: string };
         iceRestart?: boolean;
         candidate?: {
@@ -218,4 +245,35 @@ export type ServerEvent =
           usernameFragment?: string | null;
         };
       };
+    }
+  | {
+      type: 'screen:share-start';
+      payload: { channelId: string; presenter: VoiceParticipant };
+    }
+  | {
+      type: 'screen:share-stop';
+      payload: { channelId: string; presenterUserId: string };
+    }
+  | {
+      type: 'screen:signal';
+      payload: {
+        channelId: string;
+        fromUserId: string;
+        streamType: StreamType;
+        description?: { type: string; sdp?: string };
+        candidate?: {
+          candidate: string;
+          sdpMid?: string | null;
+          sdpMLineIndex?: number | null;
+          usernameFragment?: string | null;
+        };
+      };
+    }
+  | {
+      type: 'screen:viewer-joined';
+      payload: { channelId: string; presenterUserId: string; viewer: VoiceParticipant };
+    }
+  | {
+      type: 'screen:viewer-left';
+      payload: { channelId: string; presenterUserId: string; userId: string };
     };

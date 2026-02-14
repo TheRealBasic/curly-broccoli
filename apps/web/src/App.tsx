@@ -9,6 +9,7 @@ import {
   type ServerMember,
   type VoiceParticipant,
   type ServerSummary,
+  type StreamType,
 } from '@curly-broccoli/shared';
 
 type ConnectionState = 'connecting' | 'open' | 'closed';
@@ -171,6 +172,9 @@ export function App() {
   const localSpeakingDataRef = useRef<Uint8Array | null>(null);
   const remoteSpeakingAnalyserByUserIdRef = useRef<Map<string, AnalyserNode>>(new Map());
   const remoteSpeakingDataByUserIdRef = useRef<Map<string, Uint8Array>>(new Map());
+  const localScreenStreamRef = useRef<MediaStream | null>(null);
+  const screenPeerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const remoteScreenVideoRef = useRef<HTMLVideoElement | null>(null);
 
   const [auth, setAuth] = useState<AuthState | null>(() => loadAuthState());
   const [authMode, setAuthMode] = useState<AuthMode>('login');
@@ -205,6 +209,11 @@ export function App() {
     medianSetupMs: number;
     disconnectCauses: Record<string, number>;
   }>({ joinSuccessRate: 0, medianSetupMs: 0, disconnectCauses: {} });
+  const [activeScreenShare, setActiveScreenShare] = useState<{
+    channelId: string;
+    presenter: VoiceParticipant;
+  } | null>(null);
+  const [remoteScreenStream, setRemoteScreenStream] = useState<MediaStream | null>(null);
   const [activeServerId, setActiveServerId] = useState<string | null>(null);
   const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
   const [serverNameInput, setServerNameInput] = useState('');
@@ -459,7 +468,114 @@ export function App() {
     disposeAudioForUser(userId);
   }
 
+
+  function closeScreenPeerConnection(userId: string) {
+    const peerConnection = screenPeerConnectionsRef.current.get(userId);
+    if (!peerConnection) {
+      return;
+    }
+
+    peerConnection.onicecandidate = null;
+    peerConnection.ontrack = null;
+    peerConnection.close();
+    screenPeerConnectionsRef.current.delete(userId);
+  }
+
+  function stopAllScreenShare() {
+    for (const userId of Array.from(screenPeerConnectionsRef.current.keys())) {
+      closeScreenPeerConnection(userId);
+    }
+
+    const localScreenStream = localScreenStreamRef.current;
+    if (localScreenStream) {
+      for (const track of localScreenStream.getTracks()) {
+        track.stop();
+      }
+      localScreenStreamRef.current = null;
+    }
+
+    setRemoteScreenStream(null);
+  }
+
+  async function createScreenPeerConnection(
+    targetUserId: string,
+    channelId: string,
+    createOffer: boolean,
+    streamType: StreamType,
+  ) {
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      return null;
+    }
+
+    if (screenPeerConnectionsRef.current.has(targetUserId)) {
+      return screenPeerConnectionsRef.current.get(targetUserId) ?? null;
+    }
+
+    const peerConnection = new RTCPeerConnection({
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+    });
+
+    peerConnection.onicecandidate = (event) => {
+      if (!event.candidate) {
+        return;
+      }
+
+      socket.send(
+        JSON.stringify({
+          type: 'screen:signal',
+          payload: {
+            channelId,
+            targetUserId,
+            streamType,
+            candidate: event.candidate.toJSON(),
+          },
+        }),
+      );
+    };
+
+    peerConnection.ontrack = (event) => {
+      const [stream] = event.streams;
+      if (!stream) {
+        return;
+      }
+      setRemoteScreenStream(stream);
+    };
+
+    if (createOffer) {
+      const stream = localScreenStreamRef.current;
+      if (!stream) {
+        return null;
+      }
+
+      for (const track of stream.getTracks()) {
+        peerConnection.addTrack(track, stream);
+      }
+    }
+
+    screenPeerConnectionsRef.current.set(targetUserId, peerConnection);
+
+    if (createOffer) {
+      const offer = await peerConnection.createOffer();
+      await peerConnection.setLocalDescription(offer);
+      socket.send(
+        JSON.stringify({
+          type: 'screen:signal',
+          payload: {
+            channelId,
+            targetUserId,
+            streamType,
+            description: offer,
+          },
+        }),
+      );
+    }
+
+    return peerConnection;
+  }
+
   function stopAllVoice() {
+    stopAllScreenShare();
     for (const userId of Array.from(peerConnectionsRef.current.keys())) {
       closePeerConnection(userId);
     }
@@ -550,6 +666,7 @@ export function App() {
             payload: {
               channelId,
               targetUserId,
+              streamType: 'audio',
               description: offer,
               iceRestart: true,
             },
@@ -628,6 +745,7 @@ export function App() {
           payload: {
             channelId,
             targetUserId,
+            streamType: 'audio',
             candidate: event.candidate.toJSON(),
           },
         }),
@@ -662,6 +780,7 @@ export function App() {
           payload: {
             channelId,
             targetUserId,
+            streamType: 'audio',
             description: offer,
             iceRestart: false,
           },
@@ -1060,6 +1179,93 @@ export function App() {
         closePeerConnection(parsed.payload.userId);
       }
 
+
+      if (parsed.type === 'screen:share-start') {
+        setActiveScreenShare({
+          channelId: parsed.payload.channelId,
+          presenter: parsed.payload.presenter,
+        });
+        if (parsed.payload.presenter.userId !== auth.user.id) {
+          setRemoteScreenStream(null);
+        }
+      }
+
+      if (parsed.type === 'screen:share-stop') {
+        for (const userId of Array.from(screenPeerConnectionsRef.current.keys())) {
+          closeScreenPeerConnection(userId);
+        }
+        if (parsed.payload.presenterUserId === auth.user.id) {
+          stopAllScreenShare();
+        }
+        setActiveScreenShare((prev) => {
+          if (!prev || prev.presenter.userId !== parsed.payload.presenterUserId) {
+            return prev;
+          }
+          return null;
+        });
+        setRemoteScreenStream(null);
+      }
+
+      if (parsed.type === 'screen:viewer-joined') {
+        if (parsed.payload.presenterUserId === auth.user.id) {
+          void createScreenPeerConnection(
+            parsed.payload.viewer.userId,
+            parsed.payload.channelId,
+            true,
+            'screen',
+          );
+        }
+      }
+
+      if (parsed.type === 'screen:viewer-left') {
+        closeScreenPeerConnection(parsed.payload.userId);
+      }
+
+      if (parsed.type === 'screen:signal') {
+        const { channelId, fromUserId, description, candidate } = parsed.payload;
+        void (async () => {
+          const socket = socketRef.current;
+          if (!socket || socket.readyState !== WebSocket.OPEN) {
+            return;
+          }
+
+          const peerConnection = await createScreenPeerConnection(
+            fromUserId,
+            channelId,
+            false,
+            'screen',
+          );
+          if (!peerConnection) {
+            return;
+          }
+
+          if (description) {
+            await peerConnection.setRemoteDescription(description);
+            if (description.type === 'offer') {
+              const answer = await peerConnection.createAnswer();
+              await peerConnection.setLocalDescription(answer);
+              socket.send(
+                JSON.stringify({
+                  type: 'screen:signal',
+                  payload: {
+                    channelId,
+                    targetUserId: fromUserId,
+                    streamType: 'screen',
+                    description: answer,
+                  },
+                }),
+              );
+            }
+          }
+
+          if (candidate) {
+            await peerConnection.addIceCandidate(candidate);
+          }
+        })().catch(() => {
+          setError('Screen share signaling failed.');
+        });
+      }
+
       if (parsed.type === 'voice:signal') {
         const { channelId, fromUserId, description, candidate } = parsed.payload;
         void (async () => {
@@ -1079,6 +1285,7 @@ export function App() {
                   payload: {
                     channelId,
                     targetUserId: fromUserId,
+                    streamType: 'audio',
                     description: answer,
                     iceRestart: false,
                   },
@@ -1148,6 +1355,21 @@ export function App() {
     };
   }, [wsUrl, auth?.user.id, activeServerId]);
 
+
+  useEffect(() => {
+    const video = remoteScreenVideoRef.current;
+    if (!video) {
+      return;
+    }
+
+    video.srcObject = remoteScreenStream;
+    if (remoteScreenStream) {
+      void video.play().catch(() => {
+        setError('Click anywhere on the page once to allow screen playback.');
+      });
+    }
+  }, [remoteScreenStream]);
+
   useEffect(() => {
     if (!voiceChannelId || !activeChannelId || voiceChannelId === activeChannelId) {
       return;
@@ -1162,6 +1384,17 @@ export function App() {
     setVoiceChannelId(null);
     console.info('[voice] leave_local');
   }, [activeChannelId, voiceChannelId]);
+
+
+  useEffect(() => {
+    if (!activeScreenShare || !activeChannelId) {
+      return;
+    }
+
+    if (activeScreenShare.channelId !== activeChannelId) {
+      setRemoteScreenStream(null);
+    }
+  }, [activeChannelId, activeScreenShare]);
 
   useEffect(() => {
     if (activeChannelId) {
@@ -1331,7 +1564,75 @@ export function App() {
     }
   }
 
+
+  async function startScreenShare() {
+    if (!activeChannelId || voiceChannelId !== activeChannelId) {
+      setError('Join voice in this channel before sharing your screen.');
+      return;
+    }
+
+    if (activeScreenShare && activeScreenShare.presenter.userId !== auth?.user.id) {
+      setError('Another presenter is already sharing a screen.');
+      return;
+    }
+
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      setError('Screen share needs an active realtime connection.');
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: true,
+      });
+      localScreenStreamRef.current = stream;
+      const [videoTrack] = stream.getVideoTracks();
+      if (videoTrack) {
+        videoTrack.onended = () => {
+          stopScreenShare();
+        };
+      }
+
+      socket.send(JSON.stringify({ type: 'screen:share-start', payload: { channelId: activeChannelId } }));
+      setActiveScreenShare({
+        channelId: activeChannelId,
+        presenter: { userId: auth.user.id, username: auth.user.username },
+      });
+      setRemoteScreenStream(stream);
+      for (const participant of voiceParticipants) {
+        if (participant.userId === auth.user.id) {
+          continue;
+        }
+        void createScreenPeerConnection(participant.userId, activeChannelId, true, 'screen');
+      }
+      setError(null);
+    } catch {
+      setError('Screen share permission is required.');
+    }
+  }
+
+  function stopScreenShare() {
+    const socket = socketRef.current;
+    const channelId = activeScreenShare?.channelId ?? activeChannelId;
+    if (socket && socket.readyState === WebSocket.OPEN && channelId && auth) {
+      if (activeScreenShare?.presenter.userId === auth.user.id) {
+        socket.send(JSON.stringify({ type: 'screen:share-stop', payload: { channelId } }));
+      }
+    }
+
+    stopAllScreenShare();
+    setActiveScreenShare((prev) => {
+      if (prev && prev.presenter.userId === auth?.user.id) {
+        return null;
+      }
+      return prev;
+    });
+  }
+
   function leaveVoice() {
+    stopScreenShare();
     const socket = socketRef.current;
     if (socket && socket.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({ type: 'voice:leave-channel', payload: {} }));
@@ -1811,16 +2112,39 @@ export function App() {
                   : 'Join voice for the active channel'}
               </p>
             </div>
-            {voiceChannelId === activeChannelId ? (
-              <button type="button" onClick={leaveVoice}>
-                Leave voice
-              </button>
-            ) : (
-              <button type="button" onClick={() => void joinVoice()} disabled={!activeChannelId}>
-                Join voice
-              </button>
-            )}
+            <div className="voice-panel-actions">
+              {voiceChannelId === activeChannelId ? (
+                <button type="button" onClick={leaveVoice}>
+                  Leave voice
+                </button>
+              ) : (
+                <button type="button" onClick={() => void joinVoice()} disabled={!activeChannelId}>
+                  Join voice
+                </button>
+              )}
+              {activeScreenShare?.presenter.userId === auth.user.id ? (
+                <button type="button" onClick={stopScreenShare}>
+                  Stop sharing
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => void startScreenShare()}
+                  disabled={voiceChannelId !== activeChannelId || !!activeScreenShare}
+                >
+                  Start screen share
+                </button>
+              )}
+            </div>
           </section>
+          {activeScreenShare?.presenter.userId === auth.user.id && (
+            <div className="share-banner">
+              <strong>You are sharing</strong>
+              <button type="button" onClick={stopScreenShare}>
+                Stop sharing
+              </button>
+            </div>
+          )}
           <div className="voice-controls">
             <label>
               Mic gain {inputGain}%
@@ -1924,6 +2248,15 @@ export function App() {
           {searchError && <p className="error">{searchError}</p>}
 
           <section className="chat-box" aria-label="Messages">
+            {activeScreenShare && activeScreenShare.channelId === activeChannelId && (
+              <article className="screen-share-card">
+                <header>
+                  <strong>{activeScreenShare.presenter.username}</strong>
+                  <span className="subtle">is sharing their screen</span>
+                </header>
+                <video ref={remoteScreenVideoRef} autoPlay muted={activeScreenShare.presenter.userId === auth.user.id} playsInline />
+              </article>
+            )}
             {chatMode === 'channel' && !activeChannelId && (
               <p className="empty">Pick a channel to start chatting.</p>
             )}

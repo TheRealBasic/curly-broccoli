@@ -101,6 +101,9 @@ const typingByChannel = new Map<
 >();
 const voiceConnectionsByChannel = new Map<string, Set<net.Socket>>();
 const voiceChannelByConnection = new Map<net.Socket, string>();
+const screenPresenterByChannel = new Map<string, string>();
+const screenChannelByPresenterUserId = new Map<string, string>();
+const screenViewersByChannel = new Map<string, Set<string>>();
 
 function encodeFrame(text: string) {
   const payload = Buffer.from(text);
@@ -340,6 +343,51 @@ function listVoiceParticipants(channelId: string) {
   return Array.from(participantsByUserId.values());
 }
 
+
+function stopScreenShare(channelId: string, presenterUserId: string) {
+  screenPresenterByChannel.delete(channelId);
+  screenChannelByPresenterUserId.delete(presenterUserId);
+  screenViewersByChannel.delete(channelId);
+
+  const frame = encodeFrame(
+    JSON.stringify({
+      type: 'screen:share-stop',
+      payload: { channelId, presenterUserId },
+    }),
+  );
+
+  for (const client of voiceConnectionsByChannel.get(channelId) ?? []) {
+    client.write(frame);
+  }
+}
+
+function handleViewerLeave(channelId: string, userId: string) {
+  const presenterUserId = screenPresenterByChannel.get(channelId);
+  if (!presenterUserId) {
+    return;
+  }
+
+  const viewers = screenViewersByChannel.get(channelId);
+  if (!viewers || !viewers.delete(userId)) {
+    return;
+  }
+
+  if (viewers.size === 0) {
+    screenViewersByChannel.delete(channelId);
+  }
+
+  const frame = encodeFrame(
+    JSON.stringify({
+      type: 'screen:viewer-left',
+      payload: { channelId, presenterUserId, userId },
+    }),
+  );
+
+  for (const client of voiceConnectionsByChannel.get(channelId) ?? []) {
+    client.write(frame);
+  }
+}
+
 function leaveVoiceChannel(socket: net.Socket) {
   const channelId = voiceChannelByConnection.get(socket);
   if (!channelId) {
@@ -350,11 +398,19 @@ function leaveVoiceChannel(socket: net.Socket) {
   const sockets = voiceConnectionsByChannel.get(channelId);
   sockets?.delete(socket);
 
+  const authUser = userByConnection.get(socket);
+  if (authUser) {
+    if (screenPresenterByChannel.get(channelId) === authUser.userId) {
+      stopScreenShare(channelId, authUser.userId);
+    } else {
+      handleViewerLeave(channelId, authUser.userId);
+    }
+  }
+
   if (sockets && sockets.size === 0) {
     voiceConnectionsByChannel.delete(channelId);
   }
 
-  const authUser = userByConnection.get(socket);
   if (!authUser) {
     return;
   }
@@ -553,6 +609,19 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
       payload: { channelId, participants: listVoiceParticipants(channelId) },
     });
 
+    const presenterUserId = screenPresenterByChannel.get(channelId);
+    if (presenterUserId) {
+      const presenter = listVoiceParticipants(channelId).find(
+        (participant) => participant.userId === presenterUserId,
+      );
+      if (presenter) {
+        sendEvent(socket, {
+          type: 'screen:share-start',
+          payload: { channelId, presenter },
+        });
+      }
+    }
+
     const frame = encodeFrame(
       JSON.stringify({
         type: 'voice:user-joined',
@@ -568,6 +637,29 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
       }
       client.write(frame);
     }
+
+    const activePresenterUserId = screenPresenterByChannel.get(channelId);
+    if (activePresenterUserId && activePresenterUserId !== currentUser.userId) {
+      const viewers = screenViewersByChannel.get(channelId) ?? new Set<string>();
+      viewers.add(currentUser.userId);
+      screenViewersByChannel.set(channelId, viewers);
+
+      const viewerFrame = encodeFrame(
+        JSON.stringify({
+          type: 'screen:viewer-joined',
+          payload: {
+            channelId,
+            presenterUserId: activePresenterUserId,
+            viewer: { userId: currentUser.userId, username: currentUser.username },
+          },
+        }),
+      );
+
+      for (const client of sockets) {
+        client.write(viewerFrame);
+      }
+    }
+
     return;
   }
 
@@ -618,6 +710,133 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
         fromUserId: currentUser.userId,
         description: event.payload.description,
         iceRestart: event.payload.iceRestart,
+        candidate: event.payload.candidate,
+      },
+    });
+    return;
+  }
+
+
+  if (event.type === 'screen:share-start') {
+    const currentUser = userByConnection.get(socket);
+    const channelId = event.payload?.channelId?.trim();
+    if (!currentUser || !channelId) {
+      sendEvent(socket, { type: 'error', payload: { message: 'channelId is required.' } });
+      return;
+    }
+
+    if (voiceChannelByConnection.get(socket) !== channelId) {
+      sendEvent(socket, {
+        type: 'error',
+        payload: { message: 'Join the voice channel before sharing your screen.' },
+      });
+      return;
+    }
+
+    const existingPresenter = screenPresenterByChannel.get(channelId);
+    if (existingPresenter && existingPresenter !== currentUser.userId) {
+      sendEvent(socket, {
+        type: 'error',
+        payload: { message: 'Someone is already sharing their screen in this channel.' },
+      });
+      return;
+    }
+
+    screenPresenterByChannel.set(channelId, currentUser.userId);
+    screenChannelByPresenterUserId.set(currentUser.userId, channelId);
+    screenViewersByChannel.set(
+      channelId,
+      new Set(listVoiceParticipants(channelId).map((participant) => participant.userId)),
+    );
+
+    const frame = encodeFrame(
+      JSON.stringify({
+        type: 'screen:share-start',
+        payload: {
+          channelId,
+          presenter: { userId: currentUser.userId, username: currentUser.username },
+        },
+      }),
+    );
+
+    for (const client of voiceConnectionsByChannel.get(channelId) ?? []) {
+      client.write(frame);
+    }
+    return;
+  }
+
+  if (event.type === 'screen:share-stop') {
+    const currentUser = userByConnection.get(socket);
+    const channelId = event.payload?.channelId?.trim();
+    if (!currentUser || !channelId) {
+      sendEvent(socket, { type: 'error', payload: { message: 'channelId is required.' } });
+      return;
+    }
+
+    if (screenPresenterByChannel.get(channelId) !== currentUser.userId) {
+      sendEvent(socket, {
+        type: 'error',
+        payload: { message: 'Only the current presenter can stop screen sharing.' },
+      });
+      return;
+    }
+
+    stopScreenShare(channelId, currentUser.userId);
+    return;
+  }
+
+  if (event.type === 'screen:signal') {
+    const currentUser = userByConnection.get(socket);
+    const channelId = event.payload?.channelId?.trim();
+    const targetUserId = event.payload?.targetUserId?.trim();
+    if (!currentUser || !channelId || !targetUserId) {
+      sendEvent(socket, {
+        type: 'error',
+        payload: { message: 'channelId and targetUserId are required for signaling.' },
+      });
+      return;
+    }
+
+    if (voiceChannelByConnection.get(socket) !== channelId) {
+      sendEvent(socket, {
+        type: 'error',
+        payload: { message: 'Join the voice channel before sending screen signals.' },
+      });
+      return;
+    }
+
+    const targetSocket = Array.from(voiceConnectionsByChannel.get(channelId) ?? []).find(
+      (client) => userByConnection.get(client)?.userId === targetUserId,
+    );
+
+    if (!targetSocket) {
+      sendEvent(socket, { type: 'error', payload: { message: 'Screen peer is offline.' } });
+      return;
+    }
+
+    const presenterUserId = screenPresenterByChannel.get(channelId);
+    if (!presenterUserId) {
+      sendEvent(socket, { type: 'error', payload: { message: 'No active screen share.' } });
+      return;
+    }
+
+    const isPresenter = presenterUserId === currentUser.userId;
+    const isViewerToPresenter = targetUserId === presenterUserId;
+    if (!isPresenter && !isViewerToPresenter) {
+      sendEvent(socket, {
+        type: 'error',
+        payload: { message: 'Screen signaling is only allowed between presenter and viewers.' },
+      });
+      return;
+    }
+
+    sendEvent(targetSocket, {
+      type: 'screen:signal',
+      payload: {
+        channelId,
+        fromUserId: currentUser.userId,
+        streamType: event.payload.streamType,
+        description: event.payload.description,
         candidate: event.payload.candidate,
       },
     });

@@ -26,9 +26,75 @@ A full-stack, Discord-style chat app in a pnpm monorepo with:
 apps/
   api/      # Express API + WebSocket + PostgreSQL data access
   web/      # React client (Vite)
+  desktop/  # Electron wrapper for the web app
 packages/
   shared/   # Shared types/constants/events used across apps
 ```
+
+
+## Desktop app (Electron + TypeScript)
+
+The desktop wrapper lives in `apps/desktop` and loads the existing web client:
+
+- **Dev mode**: starts Vite (`apps/web`) and opens it in Electron.
+- **Prod mode**: builds `apps/web`, copies static assets into the Electron bundle, and loads `index.html` from disk.
+- **Security defaults**: `contextIsolation: true`, `nodeIntegration: false`, sandboxed renderer, and a preload bridge for IPC.
+- **WebRTC permissions**:
+  - microphone/camera requests are mediated through Electron permission handlers with user prompts
+  - screen capture uses Electron's display-media request handler and system picker support
+
+### Desktop prerequisites
+
+- Node.js 20+
+- pnpm 9+
+- Existing API running (default expected URL is `http://localhost:4000`)
+
+### Desktop development
+
+From repo root:
+
+```bash
+pnpm install
+pnpm desktop:dev
+```
+
+This runs:
+
+1. TypeScript watch for Electron main/preload
+2. Vite dev server for `apps/web` (`http://localhost:5173`)
+3. Electron pointed at the Vite URL
+
+### Desktop production build (no installer)
+
+```bash
+pnpm desktop:build
+```
+
+This compiles Electron TypeScript, builds the web app, and copies web static files into `apps/desktop/dist/renderer`.
+
+### Desktop Windows installer
+
+```bash
+pnpm desktop:dist
+```
+
+This runs `electron-builder` and outputs a Windows installer (`nsis`) into:
+
+- `apps/desktop/release/`
+
+> Note: `dist` is configured for Windows by default. You can extend `apps/desktop/package.json` `build` targets for macOS/Linux as needed.
+
+### Desktop workspace scripts
+
+- `pnpm --filter @curly-broccoli/desktop dev`
+- `pnpm --filter @curly-broccoli/desktop build`
+- `pnpm --filter @curly-broccoli/desktop dist`
+
+Convenience root scripts are also available:
+
+- `pnpm desktop:dev`
+- `pnpm desktop:build`
+- `pnpm desktop:dist`
 
 ## Prerequisites
 

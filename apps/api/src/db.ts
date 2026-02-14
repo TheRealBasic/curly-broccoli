@@ -75,6 +75,17 @@ type ServerAiSettingsRow = {
   model: string;
   system_prompt: string | null;
   max_tokens_per_reply: number | null;
+  max_prompt_chars: number | null;
+  max_completion_tokens: number | null;
+  rate_limit_user_requests: number | null;
+  rate_limit_server_requests: number | null;
+  rate_limit_window_seconds: number | null;
+  burst_limit_requests: number | null;
+  burst_window_seconds: number | null;
+  daily_token_budget: number | null;
+  monthly_token_budget: number | null;
+  auto_disable_on_budget_exceeded: boolean;
+  disabled_reason: string | null;
   temperature: string | number | null;
   allow_dm_invocation: boolean;
 };
@@ -168,6 +179,17 @@ export type ServerAiSettings = {
   model: string;
   systemPrompt: string | null;
   maxTokensPerReply: number | null;
+  maxPromptChars: number | null;
+  maxCompletionTokens: number | null;
+  rateLimitUserRequests: number | null;
+  rateLimitServerRequests: number | null;
+  rateLimitWindowSeconds: number | null;
+  burstLimitRequests: number | null;
+  burstWindowSeconds: number | null;
+  dailyTokenBudget: number | null;
+  monthlyTokenBudget: number | null;
+  autoDisableOnBudgetExceeded: boolean;
+  disabledReason: string | null;
   temperature: number | null;
   allowDmInvocation: boolean;
 };
@@ -178,8 +200,24 @@ type UpdateServerAiSettingsPatch = {
   model?: string;
   systemPrompt?: string | null;
   maxTokensPerReply?: number | null;
+  maxPromptChars?: number | null;
+  maxCompletionTokens?: number | null;
+  rateLimitUserRequests?: number | null;
+  rateLimitServerRequests?: number | null;
+  rateLimitWindowSeconds?: number | null;
+  burstLimitRequests?: number | null;
+  burstWindowSeconds?: number | null;
+  dailyTokenBudget?: number | null;
+  monthlyTokenBudget?: number | null;
+  autoDisableOnBudgetExceeded?: boolean;
+  disabledReason?: string | null;
   temperature?: number | null;
   allowDmInvocation?: boolean;
+};
+
+export type ServerAiBudgetUsage = {
+  dailyTokensUsed: number;
+  monthlyTokensUsed: number;
 };
 
 type CursorPaginationOptions = {
@@ -728,6 +766,17 @@ function mapServerAiSettingsRow(row: ServerAiSettingsRow): ServerAiSettings {
     model: row.model,
     systemPrompt: row.system_prompt,
     maxTokensPerReply: row.max_tokens_per_reply,
+    maxPromptChars: row.max_prompt_chars,
+    maxCompletionTokens: row.max_completion_tokens,
+    rateLimitUserRequests: row.rate_limit_user_requests,
+    rateLimitServerRequests: row.rate_limit_server_requests,
+    rateLimitWindowSeconds: row.rate_limit_window_seconds,
+    burstLimitRequests: row.burst_limit_requests,
+    burstWindowSeconds: row.burst_window_seconds,
+    dailyTokenBudget: row.daily_token_budget,
+    monthlyTokenBudget: row.monthly_token_budget,
+    autoDisableOnBudgetExceeded: row.auto_disable_on_budget_exceeded,
+    disabledReason: row.disabled_reason,
     temperature: row.temperature === null ? null : Number(row.temperature),
     allowDmInvocation: row.allow_dm_invocation,
   };
@@ -742,6 +791,17 @@ export async function getServerAiSettings(serverId: string) {
              COALESCE(sas.model, 'gpt-4.1-mini') AS model,
              sas.system_prompt,
              sas.max_tokens_per_reply,
+             sas.max_prompt_chars,
+             sas.max_completion_tokens,
+             sas.rate_limit_user_requests,
+             sas.rate_limit_server_requests,
+             sas.rate_limit_window_seconds,
+             sas.burst_limit_requests,
+             sas.burst_window_seconds,
+             sas.daily_token_budget,
+             sas.monthly_token_budget,
+             COALESCE(sas.auto_disable_on_budget_exceeded, FALSE) AS auto_disable_on_budget_exceeded,
+             sas.disabled_reason,
              sas.temperature,
              COALESCE(sas.allow_dm_invocation, FALSE) AS allow_dm_invocation
       FROM servers s
@@ -806,6 +866,61 @@ export async function updateServerAiSettings(
     values.push(patch.maxTokensPerReply);
   }
 
+  if (patch.maxPromptChars !== undefined) {
+    assignments.push(`max_prompt_chars = $${values.length + 1}`);
+    values.push(patch.maxPromptChars);
+  }
+
+  if (patch.maxCompletionTokens !== undefined) {
+    assignments.push(`max_completion_tokens = $${values.length + 1}`);
+    values.push(patch.maxCompletionTokens);
+  }
+
+  if (patch.rateLimitUserRequests !== undefined) {
+    assignments.push(`rate_limit_user_requests = $${values.length + 1}`);
+    values.push(patch.rateLimitUserRequests);
+  }
+
+  if (patch.rateLimitServerRequests !== undefined) {
+    assignments.push(`rate_limit_server_requests = $${values.length + 1}`);
+    values.push(patch.rateLimitServerRequests);
+  }
+
+  if (patch.rateLimitWindowSeconds !== undefined) {
+    assignments.push(`rate_limit_window_seconds = $${values.length + 1}`);
+    values.push(patch.rateLimitWindowSeconds);
+  }
+
+  if (patch.burstLimitRequests !== undefined) {
+    assignments.push(`burst_limit_requests = $${values.length + 1}`);
+    values.push(patch.burstLimitRequests);
+  }
+
+  if (patch.burstWindowSeconds !== undefined) {
+    assignments.push(`burst_window_seconds = $${values.length + 1}`);
+    values.push(patch.burstWindowSeconds);
+  }
+
+  if (patch.dailyTokenBudget !== undefined) {
+    assignments.push(`daily_token_budget = $${values.length + 1}`);
+    values.push(patch.dailyTokenBudget);
+  }
+
+  if (patch.monthlyTokenBudget !== undefined) {
+    assignments.push(`monthly_token_budget = $${values.length + 1}`);
+    values.push(patch.monthlyTokenBudget);
+  }
+
+  if (patch.autoDisableOnBudgetExceeded !== undefined) {
+    assignments.push(`auto_disable_on_budget_exceeded = $${values.length + 1}`);
+    values.push(patch.autoDisableOnBudgetExceeded);
+  }
+
+  if (patch.disabledReason !== undefined) {
+    assignments.push(`disabled_reason = $${values.length + 1}`);
+    values.push(patch.disabledReason);
+  }
+
   if (patch.temperature !== undefined) {
     assignments.push(`temperature = $${values.length + 1}`);
     values.push(patch.temperature);
@@ -829,7 +944,10 @@ export async function updateServerAiSettings(
       UPDATE server_ai_settings
       SET ${assignments.join(', ')}
       WHERE server_id = $1
-      RETURNING server_id, enabled, bot_display_name, model, system_prompt, max_tokens_per_reply, temperature, allow_dm_invocation;
+      RETURNING server_id, enabled, bot_display_name, model, system_prompt, max_tokens_per_reply,
+        max_prompt_chars, max_completion_tokens, rate_limit_user_requests, rate_limit_server_requests,
+        rate_limit_window_seconds, burst_limit_requests, burst_window_seconds, daily_token_budget,
+        monthly_token_budget, auto_disable_on_budget_exceeded, disabled_reason, temperature, allow_dm_invocation;
     `,
     values,
   );
@@ -842,6 +960,101 @@ export async function updateServerAiSettings(
   return mapServerAiSettingsRow(row);
 }
 
+
+
+
+
+export async function disableServerAiDueToBudget(serverId: string, reason: string) {
+  await pool.query(
+    `
+      INSERT INTO server_ai_settings (server_id, enabled, disabled_reason)
+      VALUES ($1, FALSE, $2)
+      ON CONFLICT (server_id) DO UPDATE
+      SET enabled = FALSE,
+          disabled_reason = $2,
+          updated_at = NOW();
+    `,
+    [serverId, reason],
+  );
+}
+export async function getServerAiBudgetUsage(serverId: string): Promise<ServerAiBudgetUsage> {
+  const dailyResult = await pool.query<{ tokens: string | number }>(
+    `
+      SELECT COALESCE(SUM(total_tokens), 0) AS tokens
+      FROM server_ai_usage_daily
+      WHERE server_id = $1
+        AND usage_date = CURRENT_DATE;
+    `,
+    [serverId],
+  );
+
+  const monthlyResult = await pool.query<{ tokens: string | number }>(
+    `
+      SELECT COALESCE(SUM(total_tokens), 0) AS tokens
+      FROM server_ai_usage_daily
+      WHERE server_id = $1
+        AND usage_date >= date_trunc('month', CURRENT_DATE)::date
+        AND usage_date < (date_trunc('month', CURRENT_DATE) + interval '1 month')::date;
+    `,
+    [serverId],
+  );
+
+  return {
+    dailyTokensUsed: Number(dailyResult.rows[0]?.tokens ?? 0),
+    monthlyTokensUsed: Number(monthlyResult.rows[0]?.tokens ?? 0),
+  };
+}
+
+export async function recordServerAiUsage(input: {
+  serverId: string;
+  requestCount?: number;
+  failureCount?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  latencyMs?: number;
+}) {
+  await pool.query(
+    `
+      INSERT INTO server_ai_usage_daily (
+        server_id,
+        usage_date,
+        request_count,
+        failure_count,
+        input_tokens,
+        output_tokens,
+        total_tokens,
+        latency_total_ms
+      )
+      VALUES (
+        $1,
+        CURRENT_DATE,
+        $2,
+        $3,
+        $4,
+        $5,
+        $6,
+        $7
+      )
+      ON CONFLICT (server_id, usage_date) DO UPDATE
+      SET request_count = server_ai_usage_daily.request_count + EXCLUDED.request_count,
+          failure_count = server_ai_usage_daily.failure_count + EXCLUDED.failure_count,
+          input_tokens = server_ai_usage_daily.input_tokens + EXCLUDED.input_tokens,
+          output_tokens = server_ai_usage_daily.output_tokens + EXCLUDED.output_tokens,
+          total_tokens = server_ai_usage_daily.total_tokens + EXCLUDED.total_tokens,
+          latency_total_ms = server_ai_usage_daily.latency_total_ms + EXCLUDED.latency_total_ms;
+    `,
+    [
+      input.serverId,
+      input.requestCount ?? 0,
+      input.failureCount ?? 0,
+      input.inputTokens ?? 0,
+      input.outputTokens ?? 0,
+      input.totalTokens ?? 0,
+      input.latencyMs ?? 0,
+    ],
+  );
+}
 export async function addMemberByUsername(serverId: string, username: string, actorUserId: string) {
   const actorRole = await getMembershipRole(serverId, actorUserId);
   if (actorRole !== 'owner') {

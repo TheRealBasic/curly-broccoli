@@ -4,7 +4,7 @@ import {
   isValidClientEvent,
   parseScreenShareRolloutStage,
   type ClientEvent,
-} from './index';
+} from './index.js';
 
 describe('screen-share protocol validators', () => {
   it('validates stream type values', () => {

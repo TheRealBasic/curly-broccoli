@@ -34,6 +34,7 @@ export type ServerMember = {
   userId: string;
   username: string;
   role: 'owner' | 'member';
+  canShareScreen: boolean;
 };
 
 export type DmThreadSummary = {
@@ -123,6 +124,10 @@ export type ClientEvent =
   | {
       type: 'screen:share-stop';
       payload: { channelId: string };
+    }
+  | {
+      type: 'screen:force-stop';
+      payload: { channelId: string; presenterUserId: string };
     }
   | {
       type: 'screen:signal';
@@ -276,4 +281,13 @@ export type ServerEvent =
   | {
       type: 'screen:viewer-left';
       payload: { channelId: string; presenterUserId: string; userId: string };
+    }
+  | {
+      type: 'moderation:audit';
+      payload: {
+        channelId: string;
+        action: 'screen_share_start' | 'screen_share_stop' | 'screen_share_force_stop';
+        actorUserId: string;
+        targetUserId?: string;
+      };
     };

@@ -74,6 +74,7 @@ type ServerMembershipRow = {
   user_id: string;
   username: string;
   role: 'owner' | 'member';
+  can_share_screen: boolean;
 };
 
 type DmThreadRow = {
@@ -432,7 +433,7 @@ export async function listServerMembers(serverId: string, userId: string) {
 
   const result = await pool.query<ServerMembershipRow>(
     `
-      SELECT sm.user_id, u.username, sm.role
+      SELECT sm.user_id, u.username, sm.role, sm.can_share_screen
       FROM server_memberships sm
       INNER JOIN users u ON u.id = sm.user_id
       WHERE sm.server_id = $1
@@ -445,7 +446,7 @@ export async function listServerMembers(serverId: string, userId: string) {
 
   return result.rows.map(
     (row) =>
-      ({ userId: row.user_id, username: row.username, role: row.role }) satisfies ServerMember,
+      ({ userId: row.user_id, username: row.username, role: row.role, canShareScreen: row.can_share_screen }) satisfies ServerMember,
   );
 }
 
@@ -474,6 +475,29 @@ export async function canAccessChannel(channelId: string, userId: string) {
   );
 
   return Boolean(result.rowCount);
+}
+
+
+export async function canManageScreenShare(channelId: string, userId: string) {
+  const result = await pool.query<{ role: 'owner' | 'member'; can_share_screen: boolean }>(
+    `
+      SELECT sm.role, sm.can_share_screen
+      FROM channels c
+      INNER JOIN server_memberships sm ON sm.server_id = c.server_id
+      WHERE c.id = $1 AND sm.user_id = $2;
+    `,
+    [channelId, userId],
+  );
+
+  const membership = result.rows[0];
+  if (!membership) {
+    return { canShare: false, canModerate: false };
+  }
+
+  return {
+    canShare: membership.role === 'owner' || membership.can_share_screen,
+    canModerate: membership.role === 'owner',
+  };
 }
 
 export async function addMemberByUsername(serverId: string, username: string, actorUserId: string) {
@@ -739,7 +763,13 @@ export async function writeModerationAuditLog(entry: {
   actorUserId: string;
   targetUserId?: string | null;
   messageId?: string | null;
-  action: 'message_delete' | 'message_report' | 'user_mute';
+  action:
+    | 'message_delete'
+    | 'message_report'
+    | 'user_mute'
+    | 'screen_share_start'
+    | 'screen_share_stop'
+    | 'screen_share_force_stop';
   details?: unknown;
 }) {
   await pool.query(
@@ -774,7 +804,13 @@ export async function listModerationAuditLogs(serverId: string, userId: string, 
     target_user_id: string | null;
     target_username: string | null;
     message_id: string | null;
-    action: 'message_delete' | 'message_report' | 'user_mute';
+    action:
+      | 'message_delete'
+      | 'message_report'
+      | 'user_mute'
+      | 'screen_share_start'
+      | 'screen_share_stop'
+      | 'screen_share_force_stop';
     details: unknown;
     created_at: Date | string;
   }>(

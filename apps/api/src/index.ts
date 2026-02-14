@@ -14,6 +14,7 @@ import {
   addMemberByUsername,
   addServerMembership,
   canAccessChannel,
+  canManageScreenShare,
   canAccessDmThread,
   chatHistoryLimit,
   createChannel,
@@ -79,6 +80,7 @@ const app = createApp({
   searchDmMessages,
   canAccessDmThread,
   canAccessChannel,
+  canManageScreenShare,
   createMessageAttachment,
 });
 const server = http.createServer(app);
@@ -343,6 +345,43 @@ function listVoiceParticipants(channelId: string) {
   return Array.from(participantsByUserId.values());
 }
 
+
+async function emitScreenShareModerationAudit(params: {
+  channelId: string;
+  actorUserId: string;
+  action: 'screen_share_start' | 'screen_share_stop' | 'screen_share_force_stop';
+  targetUserId?: string;
+}) {
+  const server = await getServerIdForChannel(params.channelId);
+  if (!server) {
+    return;
+  }
+
+  await writeModerationAuditLog({
+    id: randomUUID(),
+    serverId: server.server_id,
+    actorUserId: params.actorUserId,
+    targetUserId: params.targetUserId ?? null,
+    action: params.action,
+    details: { channelId: params.channelId },
+  });
+
+  const event = encodeFrame(
+    JSON.stringify({
+      type: 'moderation:audit',
+      payload: {
+        channelId: params.channelId,
+        action: params.action,
+        actorUserId: params.actorUserId,
+        targetUserId: params.targetUserId,
+      },
+    }),
+  );
+
+  for (const client of voiceConnectionsByChannel.get(params.channelId) ?? []) {
+    client.write(event);
+  }
+}
 
 function stopScreenShare(channelId: string, presenterUserId: string) {
   screenPresenterByChannel.delete(channelId);
@@ -733,6 +772,15 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
       return;
     }
 
+    const permissions = await canManageScreenShare(channelId, currentUser.userId);
+    if (!permissions.canShare) {
+      sendEvent(socket, {
+        type: 'error',
+        payload: { message: 'You do not have permission to share your screen in this server.' },
+      });
+      return;
+    }
+
     const existingPresenter = screenPresenterByChannel.get(channelId);
     if (existingPresenter && existingPresenter !== currentUser.userId) {
       sendEvent(socket, {
@@ -762,6 +810,13 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
     for (const client of voiceConnectionsByChannel.get(channelId) ?? []) {
       client.write(frame);
     }
+
+    await emitScreenShareModerationAudit({
+      channelId,
+      actorUserId: currentUser.userId,
+      action: 'screen_share_start',
+      targetUserId: currentUser.userId,
+    });
     return;
   }
 
@@ -782,6 +837,52 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
     }
 
     stopScreenShare(channelId, currentUser.userId);
+    await emitScreenShareModerationAudit({
+      channelId,
+      actorUserId: currentUser.userId,
+      action: 'screen_share_stop',
+      targetUserId: currentUser.userId,
+    });
+    return;
+  }
+
+
+  if (event.type === 'screen:force-stop') {
+    const currentUser = userByConnection.get(socket);
+    const channelId = event.payload?.channelId?.trim();
+    const presenterUserId = event.payload?.presenterUserId?.trim();
+    if (!currentUser || !channelId || !presenterUserId) {
+      sendEvent(socket, {
+        type: 'error',
+        payload: { message: 'channelId and presenterUserId are required.' },
+      });
+      return;
+    }
+
+    const permissions = await canManageScreenShare(channelId, currentUser.userId);
+    if (!permissions.canModerate) {
+      sendEvent(socket, {
+        type: 'error',
+        payload: { message: 'Only server owners can force stop screen sharing.' },
+      });
+      return;
+    }
+
+    if (screenPresenterByChannel.get(channelId) !== presenterUserId) {
+      sendEvent(socket, {
+        type: 'error',
+        payload: { message: 'That user is not the active screen presenter in this channel.' },
+      });
+      return;
+    }
+
+    stopScreenShare(channelId, presenterUserId);
+    await emitScreenShareModerationAudit({
+      channelId,
+      actorUserId: currentUser.userId,
+      action: 'screen_share_force_stop',
+      targetUserId: presenterUserId,
+    });
     return;
   }
 

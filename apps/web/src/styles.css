@@ -424,6 +424,15 @@ h1 {
   gap: 0.4rem;
 }
 
+
+.share-consent-card {
+  border: 1px solid #d1d5db;
+  background: #f8fafc;
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.65rem;
+  margin-bottom: 0.6rem;
+}
+
 .share-banner {
   border: 1px solid #f59e0b;
   background: #fffbeb;

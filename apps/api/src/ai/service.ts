@@ -1,6 +1,6 @@
 import type { ChatMessage } from '@curly-broccoli/shared';
 import { assembleChannelAiContext, clampMaxReplyTokens } from './context.js';
-import { requestOpenAi } from './openai.js';
+import { requestOpenAi, requestOpenAiWithStreaming } from './openai.js';
 
 export type ChannelAiRequest = {
   requestId: string;
@@ -17,7 +17,10 @@ export type ChannelAiRequest = {
   temperature: number | null;
 };
 
-export async function requestChannelAiReply(input: ChannelAiRequest) {
+export async function requestChannelAiReply(
+  input: ChannelAiRequest,
+  options?: { onChunk?: (chunk: string) => void },
+) {
   const context = assembleChannelAiContext({
     botDisplayName: input.botDisplayName,
     requesterUsername: input.requesterUsername,
@@ -26,9 +29,9 @@ export async function requestChannelAiReply(input: ChannelAiRequest) {
     systemPrompt: input.systemPrompt,
   });
 
-  return requestOpenAi({
-    provider: 'openai',
-    mode: 'responses',
+  const request = {
+    provider: 'openai' as const,
+    mode: 'responses' as const,
     model: input.model,
     messages: context.messages,
     maxTokens: clampMaxReplyTokens(input.maxTokensPerReply),
@@ -45,5 +48,11 @@ export async function requestChannelAiReply(input: ChannelAiRequest) {
       contextTruncated: String(context.truncated),
       estimatedInputTokens: String(context.estimatedInputTokens),
     },
-  });
+  };
+
+  if (options?.onChunk) {
+    return requestOpenAiWithStreaming(request, options.onChunk);
+  }
+
+  return requestOpenAi(request);
 }

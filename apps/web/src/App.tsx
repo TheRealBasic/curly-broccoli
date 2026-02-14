@@ -121,6 +121,15 @@ type RemoteAudioNodes = {
   gain: GainNode | null;
 };
 
+type StreamingAiReply = {
+  requestId: string;
+  channelId: string;
+  botDisplayName: string;
+  requestedByUserId: string;
+  text: string;
+};
+
+
 export function disposeRemoteAudioNodes(nodes: RemoteAudioNodes) {
   nodes.source.disconnect();
   nodes.analyser.disconnect();
@@ -273,6 +282,7 @@ export function App() {
   const highlightRecorderRef = useRef<MediaRecorder | null>(null);
   const highlightBufferRef = useRef<RollingClipChunk[]>([]);
   const highlightCaptureStreamRef = useRef<MediaStream | null>(null);
+  const lastSentChannelTextRef = useRef('');
 
   const [auth, setAuth] = useState<AuthState | null>(() => loadAuthState());
   const [authMode, setAuthMode] = useState<AuthMode>('login');
@@ -280,6 +290,10 @@ export function App() {
   const [passwordInput, setPasswordInput] = useState('');
   const [connectionState, setConnectionState] = useState<ConnectionState>('closed');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [streamingAiReply, setStreamingAiReply] = useState<StreamingAiReply | null>(null);
+  const [aiPromptByRequestId, setAiPromptByRequestId] = useState<Record<string, string>>({});
+  const [aiRequestIdByMessageId, setAiRequestIdByMessageId] = useState<Record<string, string>>({});
+  const [copiedAiMessageId, setCopiedAiMessageId] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState('');
   const [draft, setDraft] = useState('');
@@ -388,6 +402,13 @@ export function App() {
   const visibleMessages = chatMode === 'dm' ? dmMessages : messages;
   const showingSearchResults = searchQuery.trim().length > 0;
   const displayedMessages = showingSearchResults ? searchResults : visibleMessages;
+  const shouldShowStreamingAiReply = Boolean(
+    !showingSearchResults &&
+      chatMode === 'channel' &&
+      activeChannelId &&
+      streamingAiReply &&
+      streamingAiReply.channelId === activeChannelId,
+  );
   const currentMember = members.find((member) => member.userId === auth?.user.id) ?? null;
   const isServerOwner = currentMember?.role === 'owner';
   const canControlCoWatch = Boolean(
@@ -1404,6 +1425,9 @@ export function App() {
     if (!auth) {
       setConnectionState('closed');
       setMessages([]);
+      setStreamingAiReply(null);
+      setAiPromptByRequestId({});
+      setAiRequestIdByMessageId({});
       setServers([]);
       setChannels([]);
       setMembers([]);
@@ -1516,6 +1540,66 @@ export function App() {
                   : message,
               ),
             );
+          }
+        }
+
+        if (parsed.type === 'chat:bot-pending') {
+          if (parsed.payload.requestedByUserId === auth.user.id && lastSentChannelTextRef.current.trim()) {
+            setAiPromptByRequestId((prev) => ({
+              ...prev,
+              [parsed.payload.requestId]: lastSentChannelTextRef.current,
+            }));
+          }
+        }
+
+        if (parsed.type === 'ai:reply-start') {
+          if (parsed.payload.channelId === activeChannelRef.current) {
+            setStreamingAiReply({
+              requestId: parsed.payload.requestId,
+              channelId: parsed.payload.channelId,
+              botDisplayName: parsed.payload.botDisplayName,
+              requestedByUserId: parsed.payload.requestedByUserId,
+              text: '',
+            });
+          }
+        }
+
+        if (parsed.type === 'ai:reply-chunk') {
+          if (parsed.payload.channelId === activeChannelRef.current) {
+            setStreamingAiReply((prev) => {
+              if (!prev || prev.requestId !== parsed.payload.requestId) {
+                return {
+                  requestId: parsed.payload.requestId,
+                  channelId: parsed.payload.channelId,
+                  botDisplayName: 'assistant',
+                  requestedByUserId: auth.user.id,
+                  text: parsed.payload.chunk,
+                };
+              }
+
+              return { ...prev, text: `${prev.text}${parsed.payload.chunk}` };
+            });
+          }
+        }
+
+        if (parsed.type === 'ai:reply-complete') {
+          setAiRequestIdByMessageId((prev) => ({
+            ...prev,
+            [parsed.payload.message.id]: parsed.payload.requestId,
+          }));
+          if (parsed.payload.channelId === activeChannelRef.current) {
+            setStreamingAiReply((prev) =>
+              prev && prev.requestId === parsed.payload.requestId ? null : prev,
+            );
+          }
+        }
+
+        if (parsed.type === 'ai:reply-error') {
+          if (parsed.payload.channelId === activeChannelRef.current) {
+            setStreamingAiReply((prev) =>
+              prev && prev.requestId === parsed.payload.requestId ? null : prev,
+            );
+            setError(parsed.payload.message);
           }
         }
 
@@ -2354,6 +2438,7 @@ export function App() {
     }
 
     sendTypingStop(activeChannelId);
+    lastSentChannelTextRef.current = text;
     socket.send(
       JSON.stringify({
         type: 'chat:send',
@@ -2368,6 +2453,44 @@ export function App() {
     setDraft('');
     setPendingAttachmentUploads([]);
     setError(null);
+  }
+
+
+  async function copyTextToClipboard(messageId: string, text: string) {
+    if (!navigator.clipboard) {
+      setError('Clipboard access is not available in this browser.');
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedAiMessageId(messageId);
+      window.setTimeout(() => setCopiedAiMessageId((prev) => (prev === messageId ? null : prev)), 1200);
+    } catch {
+      setError('Unable to copy message text.');
+    }
+  }
+
+  function retryAiPrompt(requestId: string) {
+    const promptText = aiPromptByRequestId[requestId]?.trim();
+    const socket = socketRef.current;
+
+    if (!promptText || !socket || socket.readyState !== WebSocket.OPEN || !activeChannelId) {
+      setError('Unable to retry this AI request.');
+      return;
+    }
+
+    sendTypingStop(activeChannelId);
+    lastSentChannelTextRef.current = promptText;
+    socket.send(
+      JSON.stringify({
+        type: 'chat:send',
+        payload: {
+          text: promptText,
+          attachmentIds: [],
+        },
+      }),
+    );
   }
 
   function coWatchSend(event: object) {
@@ -3583,10 +3706,32 @@ export function App() {
                         Delete
                       </button>
                     )}
+                    {message.userId === null && (
+                      <>
+                        <button type="button" onClick={() => void copyTextToClipboard(message.id, message.text)}>
+                          {copiedAiMessageId === message.id ? 'Copied' : 'Copy'}
+                        </button>
+                        {aiRequestIdByMessageId[message.id] && (
+                          <button type="button" onClick={() => retryAiPrompt(aiRequestIdByMessageId[message.id])}>
+                            Retry
+                          </button>
+                        )}
+                      </>
+                    )}
                   </div>
                 )}
               </article>
             ))}
+
+            {shouldShowStreamingAiReply && streamingAiReply && (
+              <article className="message" aria-live="polite">
+                <header>
+                  <strong>{streamingAiReply.botDisplayName}</strong>
+                  <span className="subtle">replying…</span>
+                </header>
+                <p>{streamingAiReply.text || '…'}</p>
+              </article>
+            )}
           </section>
 
           {chatMode === 'channel' && (
@@ -3627,6 +3772,7 @@ export function App() {
 
                 if (!nextValue.trim()) {
                   sendTypingStop(activeChannelId);
+    lastSentChannelTextRef.current = text;
                   return;
                 }
 

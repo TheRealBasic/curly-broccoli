@@ -234,6 +234,39 @@ export type ServerEvent =
       };
     }
   | {
+      type: 'ai:reply-start';
+      payload: {
+        channelId: string;
+        requestId: string;
+        requestedByUserId: string;
+        botDisplayName: string;
+      };
+    }
+  | {
+      type: 'ai:reply-chunk';
+      payload: {
+        channelId: string;
+        requestId: string;
+        chunk: string;
+      };
+    }
+  | {
+      type: 'ai:reply-complete';
+      payload: {
+        channelId: string;
+        requestId: string;
+        message: ChatMessage;
+      };
+    }
+  | {
+      type: 'ai:reply-error';
+      payload: {
+        channelId: string;
+        requestId: string;
+        message: string;
+      };
+    }
+  | {
       type: 'chat:message-edited';
       payload: { channelId: string; messageId: string; text: string; editedAt: string };
     }

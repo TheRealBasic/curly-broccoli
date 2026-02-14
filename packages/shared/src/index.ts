@@ -36,6 +36,7 @@ export type ServerMember = {
   username: string;
   role: 'owner' | 'member';
   canShareScreen: boolean;
+  isMuted: boolean;
 };
 
 export type DmThreadSummary = {
@@ -294,7 +295,12 @@ export type ServerEvent =
       type: 'moderation:audit';
       payload: {
         channelId: string;
-        action: 'screen_share_start' | 'screen_share_stop' | 'screen_share_force_stop';
+        action:
+          | 'screen_share_start'
+          | 'screen_share_stop'
+          | 'screen_share_force_stop'
+          | 'user_unmute'
+          | 'member_permission_update';
         actorUserId: string;
         targetUserId?: string;
       };

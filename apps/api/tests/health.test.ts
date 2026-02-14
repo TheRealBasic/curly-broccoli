@@ -42,6 +42,8 @@ const baseDeps = {
   updateMessageById: vi.fn(),
   reportMessageById: vi.fn(),
   muteUserInServer: vi.fn(),
+  unmuteUserInServer: vi.fn(),
+  updateMemberScreenSharePermission: vi.fn(),
   listModerationAuditLogs: vi.fn().mockResolvedValue([]),
   writeModerationAuditLog: vi.fn(),
   notifyMessageEdited: vi.fn(),
@@ -270,4 +272,92 @@ describe('API permission checks', () => {
     expect(res.status).toBe(200);
     expect(searchChannelMessages).toHaveBeenCalledWith('channel-1', 'test', undefined, 0);
   });
+
+  it('unmutes a member and writes audit log', async () => {
+    const { createApp } = await import('../src/app.js');
+    const unmuteUserInServer = vi.fn().mockResolvedValue(undefined);
+    const writeModerationAuditLog = vi.fn().mockResolvedValue(undefined);
+    const app = createApp({
+      ...baseDeps,
+      unmuteUserInServer,
+      writeModerationAuditLog,
+    });
+
+    const token = createAccessToken({ id: 'owner-1', username: 'alice' });
+    const res = await request(app)
+      .delete('/servers/server-1/mutes/member-1')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(204);
+    expect(unmuteUserInServer).toHaveBeenCalledWith('server-1', 'member-1', 'owner-1');
+    expect(writeModerationAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        serverId: 'server-1',
+        actorUserId: 'owner-1',
+        targetUserId: 'member-1',
+        action: 'user_unmute',
+      }),
+    );
+  });
+
+  it('returns 404 when unmute target is not a member', async () => {
+    const { createApp } = await import('../src/app.js');
+    const unmuteUserInServer = vi.fn().mockRejectedValue({ code: 'TARGET_NOT_MEMBER' });
+    const app = createApp({
+      ...baseDeps,
+      unmuteUserInServer,
+    });
+
+    const token = createAccessToken({ id: 'owner-1', username: 'alice' });
+    const res = await request(app)
+      .delete('/servers/server-1/mutes/missing-1')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(404);
+  });
+
+  it('updates member screen share permission and writes audit log', async () => {
+    const { createApp } = await import('../src/app.js');
+    const updateMemberScreenSharePermission = vi.fn().mockResolvedValue(undefined);
+    const writeModerationAuditLog = vi.fn().mockResolvedValue(undefined);
+    const app = createApp({
+      ...baseDeps,
+      updateMemberScreenSharePermission,
+      writeModerationAuditLog,
+    });
+
+    const token = createAccessToken({ id: 'owner-1', username: 'alice' });
+    const res = await request(app)
+      .patch('/servers/server-1/members/member-1/permissions')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ canShareScreen: false });
+
+    expect(res.status).toBe(200);
+    expect(updateMemberScreenSharePermission).toHaveBeenCalledWith(
+      'server-1',
+      'member-1',
+      false,
+      'owner-1',
+    );
+    expect(writeModerationAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'member_permission_update',
+        details: { canShareScreen: false },
+      }),
+    );
+  });
+
+  it('returns 400 for invalid permission payload', async () => {
+    const { createApp } = await import('../src/app.js');
+    const app = createApp(baseDeps);
+
+    const token = createAccessToken({ id: 'owner-1', username: 'alice' });
+    const res = await request(app)
+      .patch('/servers/server-1/members/member-1/permissions')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ canShareScreen: 'yes' });
+
+    expect(res.status).toBe(400);
+  });
+
 });

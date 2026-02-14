@@ -48,6 +48,8 @@ type ModerationAuditLog = {
     | 'message_delete'
     | 'message_report'
     | 'user_mute'
+    | 'user_unmute'
+    | 'member_permission_update'
     | 'screen_share_start'
     | 'screen_share_stop'
     | 'screen_share_force_stop'
@@ -104,6 +106,13 @@ type AppDependencies = {
     actorUserId: string,
     reason: string | null,
   ) => Promise<void>;
+  unmuteUserInServer: (serverId: string, targetUserId: string, actorUserId: string) => Promise<void>;
+  updateMemberScreenSharePermission: (
+    serverId: string,
+    targetUserId: string,
+    canShare: boolean,
+    actorUserId: string,
+  ) => Promise<void>;
   listModerationAuditLogs: (
     serverId: string,
     userId: string,
@@ -125,6 +134,8 @@ type AppDependencies = {
       | 'message_delete'
       | 'message_report'
       | 'user_mute'
+      | 'user_unmute'
+      | 'member_permission_update'
       | 'screen_share_start'
       | 'screen_share_stop'
       | 'screen_share_force_stop'
@@ -210,6 +221,19 @@ function parseAllowedOrigins(raw: string | undefined) {
     .split(',')
     .map((origin) => origin.trim())
     .filter((origin) => origin.length > 0);
+}
+
+
+function resolveMembershipErrorStatus(error: unknown) {
+  if (!error || typeof error !== 'object' || !('code' in error)) {
+    return null;
+  }
+
+  if ((error as { code?: unknown }).code === 'TARGET_NOT_MEMBER') {
+    return 404;
+  }
+
+  return 403;
 }
 
 function validateAuthInput(username: string, password: string) {
@@ -1038,8 +1062,91 @@ export function createApp(deps: AppDependencies) {
         details: { reason },
       });
       res.status(201).json({ ok: true });
-    } catch {
+    } catch (error) {
+      const status = resolveMembershipErrorStatus(error);
+      if (status === 404) {
+        res.status(404).json({ error: 'Target member was not found in this server.' });
+        return;
+      }
+
       res.status(403).json({ error: 'Only server owners can mute members in this server.' });
+    }
+  });
+
+  app.delete('/servers/:serverId/mutes/:userId', async (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) {
+      return;
+    }
+
+    const targetUserId = String(req.params.userId ?? '').trim();
+    if (!targetUserId) {
+      res.status(400).json({ error: 'userId is required.' });
+      return;
+    }
+
+    try {
+      await deps.unmuteUserInServer(req.params.serverId, targetUserId, auth.userId);
+      await deps.writeModerationAuditLog({
+        id: randomUUID(),
+        serverId: req.params.serverId,
+        actorUserId: auth.userId,
+        targetUserId,
+        action: 'user_unmute',
+      });
+      res.status(204).send();
+    } catch (error) {
+      const status = resolveMembershipErrorStatus(error);
+      if (status === 404) {
+        res.status(404).json({ error: 'Target member was not found in this server.' });
+        return;
+      }
+
+      res.status(403).json({ error: 'Only server owners can unmute members in this server.' });
+    }
+  });
+
+  app.patch('/servers/:serverId/members/:userId/permissions', async (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) {
+      return;
+    }
+
+    const targetUserId = String(req.params.userId ?? '').trim();
+    if (!targetUserId) {
+      res.status(400).json({ error: 'userId is required.' });
+      return;
+    }
+
+    if (typeof req.body?.canShareScreen !== 'boolean') {
+      res.status(400).json({ error: 'canShareScreen must be a boolean.' });
+      return;
+    }
+
+    try {
+      await deps.updateMemberScreenSharePermission(
+        req.params.serverId,
+        targetUserId,
+        req.body.canShareScreen,
+        auth.userId,
+      );
+      await deps.writeModerationAuditLog({
+        id: randomUUID(),
+        serverId: req.params.serverId,
+        actorUserId: auth.userId,
+        targetUserId,
+        action: 'member_permission_update',
+        details: { canShareScreen: req.body.canShareScreen },
+      });
+      res.status(200).json({ ok: true });
+    } catch (error) {
+      const status = resolveMembershipErrorStatus(error);
+      if (status === 404) {
+        res.status(404).json({ error: 'Target member was not found in this server.' });
+        return;
+      }
+
+      res.status(403).json({ error: 'Only server owners can update member permissions in this server.' });
     }
   });
 

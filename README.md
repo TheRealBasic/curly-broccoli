@@ -1,89 +1,127 @@
 # Curly Broccoli Chat
 
-Stage-based build of a minimal Discord-like realtime chat app.
+A full-stack, Discord-style chat app in a pnpm monorepo with:
 
-## Current status
+- **Web app**: React + Vite + TypeScript
+- **API**: Express + WebSocket + TypeScript
+- **Database**: PostgreSQL + SQL migrations
+- **Shared package**: cross-app TypeScript types/events/constants
 
-- ✅ Stage 0 complete: monorepo + dev environment bootstrapped.
-- ✅ Stage 1 complete: realtime websocket chat.
-- ✅ Stage 2 complete: PostgreSQL persistence + migrations + history on connect.
-- ✅ Stage 6 complete: Direct Messages (DM inbox, private threads, DM chat).
-- ✅ Stage 7 complete: Moderation basics (message delete/report, server mute, audit log).
-- ✅ Stage 12 complete: Docker + CI + observability + security hardening.
+## What’s currently implemented
 
-## Monorepo structure
+- Account auth (register/login/refresh token)
+- Multi-server and multi-channel chat
+- Direct messages (private threads)
+- Live message events over WebSocket
+- Presence + typing indicators
+- Voice channel participation and screen-share controls
+- Message search, moderation actions, and audit logs
+- Image attachment uploads
+- Dockerized local and production-like environments
+- Health and metrics endpoints
+
+## Monorepo layout
 
 ```txt
 apps/
-  api/      # Node.js + TypeScript API + websocket + PostgreSQL persistence
-  web/      # React + TypeScript app (Vite)
+  api/      # Express API + WebSocket + PostgreSQL data access
+  web/      # React client (Vite)
 packages/
-  shared/   # Shared constants/types used by apps
+  shared/   # Shared types/constants/events used across apps
 ```
 
-## Quick start (fresh clone, one command)
+## Prerequisites
 
-### 1) Run everything with Docker (recommended)
+- **Node.js 20+**
+- **pnpm 9+**
+- **Docker + Docker Compose** (recommended path)
+
+## Quick start (Docker, recommended)
+
+1. Start the full stack:
 
 ```bash
 docker compose up --build
 ```
 
-That one command starts:
-
-- PostgreSQL on `localhost:5432`
-- API on `http://localhost:4000`
-- Web app on `http://localhost:5173`
-
-### 2) Open the app
+2. Open:
 
 - Web UI: `http://localhost:5173`
 - API health: `http://localhost:4000/health`
 - API metrics: `http://localhost:4000/metrics`
 
-## Local non-Docker dev
+This boots:
+
+- Postgres (`localhost:5432`)
+- API (`localhost:4000`)
+- Web app (`localhost:5173`)
+
+## Local development (without Docker)
 
 1. Install dependencies:
 
 ```bash
-pnpm i
+pnpm install
 ```
 
-2. Copy env file:
+2. Create local env file:
 
 ```bash
 cp .env.example .env
 ```
 
-3. Ensure PostgreSQL is running and the `DATABASE_URL` in `.env` is valid.
+3. Ensure Postgres is running locally and `DATABASE_URL` in `.env` points to it.
 
-4. Start both apps:
+4. Run all workspaces in watch/dev mode:
 
 ```bash
 pnpm dev
 ```
 
-The API automatically runs SQL migrations from `apps/api/migrations` on startup.
+The API runs database migrations automatically at startup from `apps/api/migrations`.
 
-## Security + production-readiness notes
+## Useful commands
 
-- **CORS is restricted** by `CORS_ALLOWED_ORIGINS` (comma-separated list).
-- **Auth endpoints are rate-limited** (`AUTH_RATE_LIMIT_MAX`, `AUTH_RATE_LIMIT_WINDOW_MS`).
-- **Input validation** is enforced for auth and paging parameters.
-- **Security headers** are set (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`).
-- **CSRF**: not required currently because authentication uses bearer tokens in headers (no cookie-based session auth).
-- **Structured request logs** are emitted by API.
-- **Basic metrics** available at `GET /metrics`.
+From repo root:
 
-## CI
+```bash
+pnpm dev        # run all workspace dev servers
+pnpm test       # run tests in all packages/apps
+pnpm lint       # run eslint in all packages/apps
+pnpm build      # build all packages/apps
+pnpm format     # prettier check
+pnpm format:write
+```
 
-GitHub Actions workflow at `.github/workflows/ci.yml` runs:
+## Environment variables
 
-- format check
-- lint
-- tests
-- build
+Primary env vars used by the stack (see `.env.example`):
+
+- `API_PORT`
+- `WEB_PORT`
+- `VITE_API_BASE_URL`
+- `DATABASE_URL`
+- `CHAT_HISTORY_LIMIT`
+- `JWT_SECRET`
+- `CORS_ALLOWED_ORIGINS`
+- `AUTH_RATE_LIMIT_MAX`
+- `AUTH_RATE_LIMIT_WINDOW_MS`
+- `POSTGRES_DB`
+- `POSTGRES_USER`
+- `POSTGRES_PASSWORD`
 
 ## Deployment
 
-See [`DEPLOYMENT.md`](./DEPLOYMENT.md) for production-like compose usage and release checklist.
+For production-like Compose usage and release checklist, see [`DEPLOYMENT.md`](./DEPLOYMENT.md).
+
+Production compose file:
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env up -d --build
+```
+
+## Notes
+
+- API exposes operational endpoints at `/health` and `/metrics`.
+- CORS is controlled via `CORS_ALLOWED_ORIGINS`.
+- Authentication uses bearer tokens (`Authorization: Bearer <token>`).

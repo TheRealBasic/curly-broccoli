@@ -1,7 +1,7 @@
 import cors from 'cors';
 import express from 'express';
 import { randomUUID } from 'node:crypto';
-import { APP_NAME, type ChatMessage } from '@curly-broccoli/shared';
+import { APP_NAME, type ChannelSummary, type ChatMessage, type ServerSummary } from '@curly-broccoli/shared';
 import {
   createAccessToken,
   createRefreshToken,
@@ -27,12 +27,23 @@ type RefreshTokenRecord = {
 };
 
 type AppDependencies = {
-  fetchRecentMessages: (limit?: number) => Promise<ChatMessage[]>;
+  fetchRecentMessages: (channelId: string, limit?: number) => Promise<ChatMessage[]>;
   findUserByUsername: (username: string) => Promise<UserRecord | null>;
+  findUserById: (id: string) => Promise<UserRecord | null>;
   createUser: (id: string, username: string, passwordHash: string) => Promise<UserRecord>;
   storeRefreshToken: (id: string, userId: string, tokenHash: string, expiresAt: string) => Promise<void>;
   findRefreshToken: (tokenHash: string) => Promise<RefreshTokenRecord | null>;
   revokeRefreshToken: (tokenHash: string) => Promise<void>;
+  listServersForUser: (userId: string) => Promise<ServerSummary[]>;
+  createServer: (id: string, name: string, ownerId: string) => Promise<ServerSummary>;
+  addServerMembership: (serverId: string, userId: string, role: 'owner' | 'member') => Promise<void>;
+  listChannelsForServer: (serverId: string, userId: string) => Promise<ChannelSummary[]>;
+  createChannel: (id: string, serverId: string, name: string, userId: string) => Promise<ChannelSummary>;
+  addMemberByUsername: (
+    serverId: string,
+    username: string,
+    actorUserId: string
+  ) => Promise<{ userId: string; username: string } | null>;
 };
 
 function validateAuthInput(username: string, password: string) {
@@ -55,10 +66,29 @@ function readBearerToken(authHeader?: string) {
   return authHeader.slice('Bearer '.length);
 }
 
+function normalizeChannelName(name: string) {
+  return name.trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9_-]/g, '').slice(0, 48);
+}
+
 export function createApp(deps: AppDependencies) {
   const app = express();
   app.use(cors());
   app.use(express.json());
+
+  function requireAuth(req: express.Request, res: express.Response) {
+    const token = readBearerToken(req.header('authorization'));
+    if (!token) {
+      res.status(401).json({ error: 'Missing bearer token.' });
+      return null;
+    }
+
+    try {
+      return verifyAccessToken(token);
+    } catch {
+      res.status(401).json({ error: 'Invalid access token.' });
+      return null;
+    }
+  }
 
   app.get('/health', (_req, res) => {
     res.json({ ok: true, service: 'api' });
@@ -188,41 +218,121 @@ export function createApp(deps: AppDependencies) {
     res.status(204).send();
   });
 
-  app.get('/auth/me', (req, res) => {
-    const token = readBearerToken(req.header('authorization'));
-    if (!token) {
-      res.status(401).json({ error: 'Missing bearer token.' });
+  app.get('/auth/me', async (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) {
       return;
     }
 
-    try {
-      const payload = verifyAccessToken(token);
-      res.json({ user: { id: payload.userId, username: payload.username } });
-    } catch {
+    const user = await deps.findUserById(auth.userId);
+    if (!user) {
       res.status(401).json({ error: 'Invalid access token.' });
+      return;
     }
+
+    res.json({ user: { id: user.id, username: user.username } });
   });
 
   app.get('/messages', async (req, res) => {
-    const token = readBearerToken(req.header('authorization'));
-
-    if (!token) {
-      res.status(401).json({ error: 'Missing bearer token.' });
+    const auth = requireAuth(req, res);
+    if (!auth) {
       return;
     }
 
-    try {
-      verifyAccessToken(token);
-    } catch {
-      res.status(401).json({ error: 'Invalid access token.' });
+    const channelId = String(req.query.channelId ?? '').trim();
+    if (!channelId) {
+      res.status(400).json({ error: 'channelId query param is required.' });
       return;
     }
 
     const limitRaw = Number(req.query.limit);
     const limit = Number.isFinite(limitRaw) ? limitRaw : undefined;
 
-    const messages = await deps.fetchRecentMessages(limit);
+    const messages = await deps.fetchRecentMessages(channelId, limit);
     res.json({ messages });
+  });
+
+  app.get('/servers', async (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) {
+      return;
+    }
+
+    const servers = await deps.listServersForUser(auth.userId);
+    res.json({ servers });
+  });
+
+  app.post('/servers', async (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) {
+      return;
+    }
+
+    const name = String(req.body?.name ?? '').trim();
+    if (name.length < 2 || name.length > 64) {
+      res.status(400).json({ error: 'Server name must be 2-64 characters.' });
+      return;
+    }
+
+    const serverId = randomUUID();
+    const server = await deps.createServer(serverId, name, auth.userId);
+    await deps.addServerMembership(serverId, auth.userId, 'owner');
+    res.status(201).json({ server });
+  });
+
+  app.get('/servers/:serverId/channels', async (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) {
+      return;
+    }
+
+    const channels = await deps.listChannelsForServer(req.params.serverId, auth.userId);
+    res.json({ channels });
+  });
+
+  app.post('/servers/:serverId/channels', async (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) {
+      return;
+    }
+
+    const normalizedName = normalizeChannelName(String(req.body?.name ?? ''));
+    if (normalizedName.length < 2) {
+      res.status(400).json({ error: 'Channel name must have at least 2 valid characters.' });
+      return;
+    }
+
+    try {
+      const channel = await deps.createChannel(randomUUID(), req.params.serverId, normalizedName, auth.userId);
+      res.status(201).json({ channel });
+    } catch {
+      res.status(403).json({ error: 'Unable to create channel. Ensure you are a server member.' });
+    }
+  });
+
+  app.post('/servers/:serverId/members', async (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) {
+      return;
+    }
+
+    const username = String(req.body?.username ?? '').trim().toLowerCase();
+    if (!username) {
+      res.status(400).json({ error: 'username is required.' });
+      return;
+    }
+
+    try {
+      const added = await deps.addMemberByUsername(req.params.serverId, username, auth.userId);
+      if (!added) {
+        res.status(404).json({ error: 'User not found.' });
+        return;
+      }
+
+      res.status(201).json({ member: added });
+    } catch {
+      res.status(403).json({ error: 'Only server owners can add members.' });
+    }
   });
 
   app.get('/', (_req, res) => {

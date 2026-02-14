@@ -14,6 +14,7 @@ import {
 } from '@curly-broccoli/shared';
 import { createApp } from './app.js';
 import { requestChannelAiReply } from './ai/service.js';
+import { isAiEnabledForServer, isAiGlobalKillSwitchEnabled } from './ai/rollout.js';
 import { verifyAccessToken } from './auth.js';
 import {
   addMemberByUsername,
@@ -1650,6 +1651,17 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
       !aiPendingByChannel.has(activeChannelId) &&
       currentUser.username.toLowerCase() !== botDisplayName.toLowerCase()
     ) {
+      if (!isAiEnabledForServer(server.server_id)) {
+        broadcastToChannel(activeChannelId, {
+          type: 'ai:reply-error',
+          payload: {
+            channelId: activeChannelId,
+            requestId: randomUUID(),
+            message: 'AI is currently disabled for this server rollout stage.',
+          },
+        });
+        return;
+      }
       if (aiSettings.disabledReason) {
         broadcastToChannel(activeChannelId, {
           type: 'ai:reply-error',
@@ -1958,6 +1970,10 @@ server.on('upgrade', (req, socket) => {
     closeConnection(socket);
   });
 });
+
+if (isAiGlobalKillSwitchEnabled()) {
+  console.warn('[ai] Global kill switch enabled. AI invocation is disabled for all servers.');
+}
 
 void runMigrations()
   .then(() => {

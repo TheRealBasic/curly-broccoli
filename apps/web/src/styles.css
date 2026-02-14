@@ -418,3 +418,36 @@ h1 {
   gap: 0.25rem;
   font-size: 0.72rem;
 }
+
+.voice-panel-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.share-banner {
+  border: 1px solid #f59e0b;
+  background: #fffbeb;
+  color: #92400e;
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.7rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.6rem;
+}
+
+.screen-share-card {
+  border: 1px solid #bfdbfe;
+  background: #eff6ff;
+  border-radius: 0.5rem;
+  padding: 0.6rem;
+  margin-bottom: 0.6rem;
+}
+
+.screen-share-card video {
+  width: 100%;
+  border-radius: 0.4rem;
+  border: 1px solid #93c5fd;
+  background: #0f172a;
+  max-height: 300px;
+}

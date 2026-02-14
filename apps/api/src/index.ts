@@ -6,6 +6,7 @@ import {
   type ChatMessage,
   type ClientEvent,
   type DmMessage,
+  type CoWatchPlaybackState,
   type ServerEvent,
   isValidClientEvent,
   parseScreenShareRolloutStage,
@@ -35,6 +36,7 @@ import {
   findUserByUsername,
   getServerIdForChannel,
   getUnreadSummary,
+  getChannelWatchSession,
   isMemberOfServer,
   isMutedInServer,
   listChannelsForServer,
@@ -56,6 +58,7 @@ import {
   searchChannelMessagesPage,
   searchDmMessagesPage,
   storeRefreshToken,
+  upsertChannelWatchSession,
   writeModerationAuditLog,
 } from './db.js';
 
@@ -134,6 +137,39 @@ const voiceChannelByConnection = new Map<net.Socket, string>();
 const screenPresenterByChannel = new Map<string, string>();
 const screenChannelByPresenterUserId = new Map<string, string>();
 const screenViewersByChannel = new Map<string, Set<string>>();
+const watchSessionByChannel = new Map<string, CoWatchPlaybackState>();
+
+function computeWatchPosition(state: CoWatchPlaybackState, nowMs = Date.now()) {
+  if (state.paused) {
+    return state.positionSec;
+  }
+
+  const driftSec = Math.max(0, (nowMs - Date.parse(state.lastEventAt)) / 1000);
+  return state.positionSec + driftSec;
+}
+
+async function hydrateWatchSession(channelId: string) {
+  const cached = watchSessionByChannel.get(channelId);
+  if (cached) {
+    return cached;
+  }
+
+  const persisted = await getChannelWatchSession(channelId);
+  if (persisted) {
+    watchSessionByChannel.set(channelId, persisted);
+  }
+
+  return persisted;
+}
+
+function canControlWatchSession(state: CoWatchPlaybackState, userId: string) {
+  return state.hostUserId === userId || state.controllers.includes(userId);
+}
+
+function broadcastWatchEvent(channelId: string, event: ServerEvent) {
+  broadcastToChannel(channelId, event);
+}
+
 
 function parseCsvSet(raw: string | undefined) {
   if (!raw) {
@@ -585,6 +621,8 @@ async function handleJoinChannel(socket: net.Socket, channelId: string) {
   try {
     const messages = await fetchRecentMessages(channelId, chatHistoryLimit);
     sendEvent(socket, { type: 'chat:history', payload: { channelId, messages } });
+    const watchState = await hydrateWatchSession(channelId);
+    sendEvent(socket, { type: 'watch:state', payload: { channelId, state: watchState ?? null } });
   } catch {
     sendEvent(socket, {
       type: 'error',
@@ -1021,6 +1059,119 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
     });
     return;
   }
+
+  if (
+    event.type === 'watch:start' ||
+    event.type === 'watch:pause' ||
+    event.type === 'watch:seek' ||
+    event.type === 'watch:state' ||
+    event.type === 'watch:transfer-host' ||
+    event.type === 'watch:set-permissions'
+  ) {
+    const currentUser = userByConnection.get(socket);
+    const channelId = event.payload?.channelId?.trim();
+    if (!currentUser || !channelId) {
+      sendEvent(socket, { type: 'error', payload: { message: 'channelId is required.' } });
+      return;
+    }
+
+    if (activeChannelByConnection.get(socket) !== channelId) {
+      sendEvent(socket, { type: 'error', payload: { message: 'Join the channel before co-watching.' } });
+      return;
+    }
+
+    const allowed = await canAccessChannel(channelId, currentUser.userId);
+    if (!allowed) {
+      sendEvent(socket, { type: 'error', payload: { message: 'You cannot access this channel.' } });
+      return;
+    }
+
+    const existingState = await hydrateWatchSession(channelId);
+
+    if (event.type === 'watch:state') {
+      sendEvent(socket, { type: 'watch:state', payload: { channelId, state: existingState ?? null } });
+      return;
+    }
+
+    if (event.type === 'watch:start') {
+      const nextState: CoWatchPlaybackState = {
+        media: event.payload.media,
+        paused: event.payload.paused ?? true,
+        positionSec: Math.max(0, event.payload.positionSec ?? 0),
+        lastEventAt: event.payload.eventAt ?? new Date().toISOString(),
+        hostUserId: existingState?.hostUserId ?? currentUser.userId,
+        controllers: existingState?.controllers ?? [],
+      };
+
+      if (existingState && !canControlWatchSession(existingState, currentUser.userId)) {
+        sendEvent(socket, { type: 'error', payload: { message: 'Only host/controllers can start media.' } });
+        return;
+      }
+
+      watchSessionByChannel.set(channelId, nextState);
+      await upsertChannelWatchSession(channelId, nextState);
+      broadcastWatchEvent(channelId, { type: 'watch:start', payload: { channelId, state: nextState } });
+      return;
+    }
+
+    if (!existingState) {
+      sendEvent(socket, { type: 'error', payload: { message: 'No active co-watch session for channel.' } });
+      return;
+    }
+
+    if (event.type === 'watch:transfer-host') {
+      if (existingState.hostUserId !== currentUser.userId) {
+        sendEvent(socket, { type: 'error', payload: { message: 'Only host can transfer host role.' } });
+        return;
+      }
+
+      const nextState: CoWatchPlaybackState = { ...existingState, hostUserId: event.payload.targetUserId.trim() };
+      watchSessionByChannel.set(channelId, nextState);
+      await upsertChannelWatchSession(channelId, nextState);
+      broadcastWatchEvent(channelId, { type: 'watch:state', payload: { channelId, state: nextState } });
+      return;
+    }
+
+    if (event.type === 'watch:set-permissions') {
+      if (existingState.hostUserId !== currentUser.userId) {
+        sendEvent(socket, { type: 'error', payload: { message: 'Only host can set controller permissions.' } });
+        return;
+      }
+
+      const nextState: CoWatchPlaybackState = { ...existingState, controllers: Array.from(new Set(event.payload.controllers)) };
+      watchSessionByChannel.set(channelId, nextState);
+      await upsertChannelWatchSession(channelId, nextState);
+      broadcastWatchEvent(channelId, { type: 'watch:state', payload: { channelId, state: nextState } });
+      return;
+    }
+
+    if (!canControlWatchSession(existingState, currentUser.userId)) {
+      sendEvent(socket, { type: 'error', payload: { message: 'Only host/controllers can control playback.' } });
+      return;
+    }
+
+    const nextState: CoWatchPlaybackState = {
+      ...existingState,
+      paused: event.payload.paused,
+      positionSec:
+        event.type === 'watch:pause'
+          ? Math.max(0, event.payload.positionSec)
+          : Math.max(0, event.payload.positionSec),
+      lastEventAt: event.payload.eventAt ?? new Date().toISOString(),
+    };
+
+    watchSessionByChannel.set(channelId, nextState);
+    await upsertChannelWatchSession(channelId, nextState);
+    broadcastWatchEvent(channelId, {
+      type: event.type,
+      payload: {
+        channelId,
+        state: { ...nextState, positionSec: computeWatchPosition(nextState) },
+      },
+    });
+    return;
+  }
+
 
   if (event.type === 'typing:start' || event.type === 'typing:stop') {
     const currentUser = userByConnection.get(socket);

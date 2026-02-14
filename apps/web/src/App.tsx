@@ -294,7 +294,8 @@ export function App() {
 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<(ChatMessage | DmMessage)[]>([]);
-  const [searchOffset, setSearchOffset] = useState(0);
+  const [searchNextCursor, setSearchNextCursor] = useState<string | null>(null);
+  const [searchCursorTrail, setSearchCursorTrail] = useState<(string | null)[]>([null]);
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const SEARCH_PAGE_SIZE = 20;
@@ -1065,7 +1066,8 @@ export function App() {
       setDmUnreadCounts({});
       setSearchQuery('');
       setSearchResults([]);
-      setSearchOffset(0);
+      setSearchNextCursor(null);
+      setSearchCursorTrail([null]);
       setSearchError(null);
       return;
     }
@@ -1572,7 +1574,8 @@ export function App() {
     setMessages([]);
     setSearchQuery('');
     setSearchResults([]);
-    setSearchOffset(0);
+    setSearchNextCursor(null);
+    setSearchCursorTrail([null]);
     setSearchError(null);
     socket.send(
       JSON.stringify({
@@ -1606,7 +1609,8 @@ export function App() {
     setDmMessages([]);
     setSearchQuery('');
     setSearchResults([]);
-    setSearchOffset(0);
+    setSearchNextCursor(null);
+    setSearchCursorTrail([null]);
     setSearchError(null);
     socket.send(
       JSON.stringify({
@@ -1663,19 +1667,20 @@ export function App() {
     setError(null);
   }
 
-  async function runSearch(offset = 0) {
+  async function runSearch(beforeCursor: string | null = null, trail: (string | null)[] = [null]) {
     const query = searchQuery.trim();
     if (!query) {
       setSearchResults([]);
-      setSearchOffset(0);
+      setSearchNextCursor(null);
+      setSearchCursorTrail([null]);
       setSearchError(null);
       return;
     }
 
     const path =
       chatMode === 'dm'
-        ? `/dm/messages/search?threadId=${encodeURIComponent(String(activeDmThreadId ?? ''))}&query=${encodeURIComponent(query)}&limit=${SEARCH_PAGE_SIZE}&offset=${offset}`
-        : `/messages/search?channelId=${encodeURIComponent(String(activeChannelId ?? ''))}&query=${encodeURIComponent(query)}&limit=${SEARCH_PAGE_SIZE}&offset=${offset}`;
+        ? `/dm/messages/search?threadId=${encodeURIComponent(String(activeDmThreadId ?? ''))}&query=${encodeURIComponent(query)}&limit=${SEARCH_PAGE_SIZE}${beforeCursor ? `&before=${encodeURIComponent(beforeCursor)}` : ''}`
+        : `/messages/search?channelId=${encodeURIComponent(String(activeChannelId ?? ''))}&query=${encodeURIComponent(query)}&limit=${SEARCH_PAGE_SIZE}${beforeCursor ? `&before=${encodeURIComponent(beforeCursor)}` : ''}`;
 
     if ((chatMode === 'dm' && !activeDmThreadId) || (chatMode === 'channel' && !activeChannelId)) {
       return;
@@ -1689,9 +1694,14 @@ export function App() {
         throw new Error('Unable to search messages.');
       }
 
-      const data = (await res.json()) as { messages: (ChatMessage | DmMessage)[] };
+      const data = (await res.json()) as {
+        messages: (ChatMessage | DmMessage)[];
+        nextCursor: string | null;
+        prevCursor: string | null;
+      };
       setSearchResults(data.messages);
-      setSearchOffset(offset);
+      setSearchNextCursor(data.nextCursor);
+      setSearchCursorTrail(trail);
     } catch (reason) {
       setSearchError(reason instanceof Error ? reason.message : 'Unable to search messages.');
     } finally {
@@ -2528,7 +2538,7 @@ export function App() {
             className="inline-form search-bar"
             onSubmit={(event) => {
               event.preventDefault();
-              void runSearch(0);
+              void runSearch(null, [null]);
             }}
           >
             <input
@@ -2546,7 +2556,8 @@ export function App() {
                 onClick={() => {
                   setSearchQuery('');
                   setSearchResults([]);
-                  setSearchOffset(0);
+                  setSearchNextCursor(null);
+                  setSearchCursorTrail([null]);
                   setSearchError(null);
                 }}
               >
@@ -2558,16 +2569,29 @@ export function App() {
             <div className="search-pagination">
               <button
                 type="button"
-                onClick={() => void runSearch(Math.max(0, searchOffset - SEARCH_PAGE_SIZE))}
-                disabled={isSearching || searchOffset === 0}
+                onClick={() => {
+                  if (searchCursorTrail.length <= 1) {
+                    return;
+                  }
+                  const previousTrail = searchCursorTrail.slice(0, -1);
+                  const previousCursor = previousTrail[previousTrail.length - 1] ?? null;
+                  void runSearch(previousCursor, previousTrail);
+                }}
+                disabled={isSearching || searchCursorTrail.length <= 1}
               >
                 Previous
               </button>
-              <span className="subtle">Offset {searchOffset}</span>
+              <span className="subtle">Page {searchCursorTrail.length}</span>
               <button
                 type="button"
-                onClick={() => void runSearch(searchOffset + SEARCH_PAGE_SIZE)}
-                disabled={isSearching || searchResults.length < SEARCH_PAGE_SIZE}
+                onClick={() => {
+                  if (!searchNextCursor) {
+                    return;
+                  }
+                  const nextTrail = [...searchCursorTrail, searchNextCursor];
+                  void runSearch(searchNextCursor, nextTrail);
+                }}
+                disabled={isSearching || !searchNextCursor}
               >
                 Next
               </button>

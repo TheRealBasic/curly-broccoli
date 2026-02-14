@@ -116,6 +116,69 @@ type SearchDmMessageRow = {
   created_at: Date | string;
 };
 
+type PaginationCursor = {
+  createdAt: string;
+  id: string;
+};
+
+type MessagePage<T> = {
+  messages: T[];
+  nextCursor: string | null;
+  prevCursor: string | null;
+};
+
+type CursorPaginationOptions = {
+  limit?: number;
+  before?: string;
+  after?: string;
+  offset?: number;
+};
+
+function encodeCursorToken(cursor: PaginationCursor) {
+  return Buffer.from(`${cursor.createdAt}|${cursor.id}`, 'utf8').toString('base64url');
+}
+
+function decodeCursorToken(token: string): PaginationCursor | null {
+  try {
+    const decoded = Buffer.from(token, 'base64url').toString('utf8');
+    const separatorIndex = decoded.indexOf('|');
+    if (separatorIndex <= 0 || separatorIndex === decoded.length - 1) {
+      return null;
+    }
+
+    const createdAt = decoded.slice(0, separatorIndex);
+    const id = decoded.slice(separatorIndex + 1);
+    const timestamp = Date.parse(createdAt);
+    if (!Number.isFinite(timestamp) || !id) {
+      return null;
+    }
+
+    return {
+      createdAt: new Date(timestamp).toISOString(),
+      id,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseCursorOrThrow(raw: string | undefined, label: 'before' | 'after') {
+  if (!raw) {
+    return null;
+  }
+
+  const cursor = decodeCursorToken(raw);
+  if (!cursor) {
+    throw new Error(`Invalid ${label} cursor.`);
+  }
+
+  return cursor;
+}
+
+function toCursor(createdAt: Date | string, id: string): PaginationCursor {
+  return { createdAt: new Date(createdAt).toISOString(), id };
+}
+
 function mapAttachmentRow(row: MessageAttachmentRow): MessageAttachment {
   return {
     id: row.id,
@@ -625,24 +688,64 @@ export async function saveMessage(message: {
   }
 }
 
-export async function fetchRecentMessages(channelId: string, limit = chatHistoryLimit) {
-  const safeLimit = Math.max(1, Math.min(limit, 500));
+export async function fetchChannelMessagesPage(
+  channelId: string,
+  options: CursorPaginationOptions = {},
+): Promise<MessagePage<ChatMessage>> {
+  const safeLimit = Math.max(1, Math.min(options.limit ?? chatHistoryLimit, 500));
+  const safeOffset = Math.max(0, Math.min(options.offset ?? 0, 5_000));
+  const beforeCursor = parseCursorOrThrow(options.before, 'before');
+  const afterCursor = parseCursorOrThrow(options.after, 'after');
+
   const rows = await pool.query<ChatMessageRow>(
     `
       SELECT id, channel_id, user_id, user_name, text, created_at, edited_at
       FROM chat_messages
       WHERE channel_id = $1
-      ORDER BY created_at DESC
-      LIMIT $2;
+        AND (
+          ($2::timestamptz IS NULL AND $3::uuid IS NULL)
+          OR (created_at, id) < ($2::timestamptz, $3::uuid)
+        )
+        AND (
+          ($4::timestamptz IS NULL AND $5::uuid IS NULL)
+          OR (created_at, id) > ($4::timestamptz, $5::uuid)
+        )
+      ORDER BY created_at DESC, id DESC
+      LIMIT $6
+      OFFSET $7;
     `,
-    [channelId, safeLimit],
+    [
+      channelId,
+      beforeCursor?.createdAt ?? null,
+      beforeCursor?.id ?? null,
+      afterCursor?.createdAt ?? null,
+      afterCursor?.id ?? null,
+      safeLimit,
+      safeOffset,
+    ],
   );
 
-  const messages = rows.rows.reverse();
-  const attachmentsByMessageId = await fetchAttachmentsForMessages(
-    messages.map((message) => message.id),
-  );
-  return messages.map((message) => mapRow(message, attachmentsByMessageId.get(message.id) ?? []));
+  const descending = rows.rows;
+  const messages = descending.slice().reverse();
+  const attachmentsByMessageId = await fetchAttachmentsForMessages(messages.map((message) => message.id));
+  const mapped = messages.map((message) => mapRow(message, attachmentsByMessageId.get(message.id) ?? []));
+
+  return {
+    messages: mapped,
+    nextCursor:
+      descending.length > 0
+        ? encodeCursorToken(toCursor(descending[descending.length - 1].created_at, descending[descending.length - 1].id))
+        : null,
+    prevCursor:
+      descending.length > 0
+        ? encodeCursorToken(toCursor(descending[0].created_at, descending[0].id))
+        : null,
+  };
+}
+
+export async function fetchRecentMessages(channelId: string, limit = chatHistoryLimit) {
+  const page = await fetchChannelMessagesPage(channelId, { limit });
+  return page.messages;
 }
 
 export async function updateMessageById(messageId: string, actorUserId: string, newText: string) {
@@ -1080,8 +1183,15 @@ export async function saveDmMessage(message: DmMessage) {
   return mapDmMessageRow(inserted.rows[0]);
 }
 
-export async function fetchRecentDmMessages(threadId: string, limit = chatHistoryLimit) {
-  const safeLimit = Math.max(1, Math.min(limit, 500));
+export async function fetchDmMessagesPage(
+  threadId: string,
+  options: CursorPaginationOptions = {},
+): Promise<MessagePage<DmMessage>> {
+  const safeLimit = Math.max(1, Math.min(options.limit ?? chatHistoryLimit, 500));
+  const safeOffset = Math.max(0, Math.min(options.offset ?? 0, 5_000));
+  const beforeCursor = parseCursorOrThrow(options.before, 'before');
+  const afterCursor = parseCursorOrThrow(options.after, 'after');
+
   const rows = await pool.query<DmMessageRow>(
     `
       SELECT
@@ -1094,13 +1204,105 @@ export async function fetchRecentDmMessages(threadId: string, limit = chatHistor
       FROM dm_messages
       INNER JOIN users ON users.id = dm_messages.sender_user_id
       WHERE dm_messages.thread_id = $1
-      ORDER BY dm_messages.created_at DESC
-      LIMIT $2;
+        AND (
+          ($2::timestamptz IS NULL AND $3::uuid IS NULL)
+          OR (dm_messages.created_at, dm_messages.id) < ($2::timestamptz, $3::uuid)
+        )
+        AND (
+          ($4::timestamptz IS NULL AND $5::uuid IS NULL)
+          OR (dm_messages.created_at, dm_messages.id) > ($4::timestamptz, $5::uuid)
+        )
+      ORDER BY dm_messages.created_at DESC, dm_messages.id DESC
+      LIMIT $6
+      OFFSET $7;
     `,
-    [threadId, safeLimit],
+    [
+      threadId,
+      beforeCursor?.createdAt ?? null,
+      beforeCursor?.id ?? null,
+      afterCursor?.createdAt ?? null,
+      afterCursor?.id ?? null,
+      safeLimit,
+      safeOffset,
+    ],
   );
 
-  return rows.rows.reverse().map(mapDmMessageRow);
+  const descending = rows.rows;
+  return {
+    messages: descending.slice().reverse().map(mapDmMessageRow),
+    nextCursor:
+      descending.length > 0
+        ? encodeCursorToken(toCursor(descending[descending.length - 1].created_at, descending[descending.length - 1].id))
+        : null,
+    prevCursor:
+      descending.length > 0
+        ? encodeCursorToken(toCursor(descending[0].created_at, descending[0].id))
+        : null,
+  };
+}
+
+export async function fetchRecentDmMessages(threadId: string, limit = chatHistoryLimit) {
+  const page = await fetchDmMessagesPage(threadId, { limit });
+  return page.messages;
+}
+
+export async function searchChannelMessagesPage(
+  channelId: string,
+  query: string,
+  options: CursorPaginationOptions = {},
+): Promise<MessagePage<ChatMessage>> {
+  const normalizedQuery = query.trim();
+  if (!normalizedQuery) {
+    return { messages: [], nextCursor: null, prevCursor: null };
+  }
+
+  const safeLimit = Math.max(1, Math.min(options.limit ?? 25, 100));
+  const safeOffset = Math.max(0, Math.min(options.offset ?? 0, 5_000));
+  const beforeCursor = parseCursorOrThrow(options.before, 'before');
+  const afterCursor = parseCursorOrThrow(options.after, 'after');
+  const rows = await pool.query<SearchMessageRow>(
+    `
+      SELECT id, channel_id, user_id, user_name, text, created_at, edited_at
+      FROM chat_messages
+      WHERE channel_id = $1
+        AND to_tsvector('simple', coalesce(text, '')) @@ plainto_tsquery('simple', $2)
+        AND (
+          ($3::timestamptz IS NULL AND $4::uuid IS NULL)
+          OR (created_at, id) < ($3::timestamptz, $4::uuid)
+        )
+        AND (
+          ($5::timestamptz IS NULL AND $6::uuid IS NULL)
+          OR (created_at, id) > ($5::timestamptz, $6::uuid)
+        )
+      ORDER BY created_at DESC, id DESC
+      LIMIT $7
+      OFFSET $8;
+    `,
+    [
+      channelId,
+      normalizedQuery,
+      beforeCursor?.createdAt ?? null,
+      beforeCursor?.id ?? null,
+      afterCursor?.createdAt ?? null,
+      afterCursor?.id ?? null,
+      safeLimit,
+      safeOffset,
+    ],
+  );
+
+  const attachmentsByMessageId = await fetchAttachmentsForMessages(rows.rows.map((row) => row.id));
+  const mapped = rows.rows.map((row) => mapRow(row, attachmentsByMessageId.get(row.id) ?? []));
+  return {
+    messages: mapped,
+    nextCursor:
+      rows.rows.length > 0
+        ? encodeCursorToken(toCursor(rows.rows[rows.rows.length - 1].created_at, rows.rows[rows.rows.length - 1].id))
+        : null,
+    prevCursor:
+      rows.rows.length > 0
+        ? encodeCursorToken(toCursor(rows.rows[0].created_at, rows.rows[0].id))
+        : null,
+  };
 }
 
 export async function searchChannelMessages(
@@ -1109,38 +1311,24 @@ export async function searchChannelMessages(
   limit = 25,
   offset = 0,
 ) {
-  const normalizedQuery = query.trim();
-  if (!normalizedQuery) {
-    return [] as ChatMessage[];
-  }
-
-  const safeLimit = Math.max(1, Math.min(limit, 100));
-  const safeOffset = Math.max(0, Math.min(offset, 5_000));
-  const rows = await pool.query<SearchMessageRow>(
-    `
-      SELECT id, channel_id, user_id, user_name, text, created_at, edited_at
-      FROM chat_messages
-      WHERE channel_id = $1
-        AND to_tsvector('simple', coalesce(text, '')) @@ plainto_tsquery('simple', $2)
-      ORDER BY created_at DESC
-      LIMIT $3
-      OFFSET $4;
-    `,
-    [channelId, normalizedQuery, safeLimit, safeOffset],
-  );
-
-  const attachmentsByMessageId = await fetchAttachmentsForMessages(rows.rows.map((row) => row.id));
-  return rows.rows.map((row) => mapRow(row, attachmentsByMessageId.get(row.id) ?? []));
+  const page = await searchChannelMessagesPage(channelId, query, { limit, offset });
+  return page.messages;
 }
 
-export async function searchDmMessages(threadId: string, query: string, limit = 25, offset = 0) {
+export async function searchDmMessagesPage(
+  threadId: string,
+  query: string,
+  options: CursorPaginationOptions = {},
+): Promise<MessagePage<DmMessage>> {
   const normalizedQuery = query.trim();
   if (!normalizedQuery) {
-    return [] as DmMessage[];
+    return { messages: [], nextCursor: null, prevCursor: null };
   }
 
-  const safeLimit = Math.max(1, Math.min(limit, 100));
-  const safeOffset = Math.max(0, Math.min(offset, 5_000));
+  const safeLimit = Math.max(1, Math.min(options.limit ?? 25, 100));
+  const safeOffset = Math.max(0, Math.min(options.offset ?? 0, 5_000));
+  const beforeCursor = parseCursorOrThrow(options.before, 'before');
+  const afterCursor = parseCursorOrThrow(options.after, 'after');
   const rows = await pool.query<SearchDmMessageRow>(
     `
       SELECT
@@ -1154,12 +1342,44 @@ export async function searchDmMessages(threadId: string, query: string, limit = 
       INNER JOIN users ON users.id = dm_messages.sender_user_id
       WHERE dm_messages.thread_id = $1
         AND to_tsvector('simple', coalesce(dm_messages.text, '')) @@ plainto_tsquery('simple', $2)
-      ORDER BY dm_messages.created_at DESC
-      LIMIT $3
-      OFFSET $4;
+        AND (
+          ($3::timestamptz IS NULL AND $4::uuid IS NULL)
+          OR (dm_messages.created_at, dm_messages.id) < ($3::timestamptz, $4::uuid)
+        )
+        AND (
+          ($5::timestamptz IS NULL AND $6::uuid IS NULL)
+          OR (dm_messages.created_at, dm_messages.id) > ($5::timestamptz, $6::uuid)
+        )
+      ORDER BY dm_messages.created_at DESC, dm_messages.id DESC
+      LIMIT $7
+      OFFSET $8;
     `,
-    [threadId, normalizedQuery, safeLimit, safeOffset],
+    [
+      threadId,
+      normalizedQuery,
+      beforeCursor?.createdAt ?? null,
+      beforeCursor?.id ?? null,
+      afterCursor?.createdAt ?? null,
+      afterCursor?.id ?? null,
+      safeLimit,
+      safeOffset,
+    ],
   );
 
-  return rows.rows.map(mapDmMessageRow);
+  return {
+    messages: rows.rows.map(mapDmMessageRow),
+    nextCursor:
+      rows.rows.length > 0
+        ? encodeCursorToken(toCursor(rows.rows[rows.rows.length - 1].created_at, rows.rows[rows.rows.length - 1].id))
+        : null,
+    prevCursor:
+      rows.rows.length > 0
+        ? encodeCursorToken(toCursor(rows.rows[0].created_at, rows.rows[0].id))
+        : null,
+  };
+}
+
+export async function searchDmMessages(threadId: string, query: string, limit = 25, offset = 0) {
+  const page = await searchDmMessagesPage(threadId, query, { limit, offset });
+  return page.messages;
 }

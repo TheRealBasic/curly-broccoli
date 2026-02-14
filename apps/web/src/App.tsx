@@ -104,6 +104,7 @@ const SCREEN_PRESETS: Record<ScreenContentType, ScreenEncodingPreset> = {
 };
 const HIGHLIGHT_BUFFER_MS = 30_000;
 const HIGHLIGHT_CHUNK_MS = 1_000;
+const AI_MODEL_OPTIONS = ['gpt-4.1-mini', 'gpt-4.1', 'gpt-4o-mini'] as const;
 
 type NotificationPermissionState = 'unsupported' | NotificationPermission;
 
@@ -127,6 +128,27 @@ type StreamingAiReply = {
   botDisplayName: string;
   requestedByUserId: string;
   text: string;
+};
+
+type AiInvocationPolicy = 'everyone' | 'roles';
+
+type ServerAiStatus = {
+  enabled: boolean;
+  keyMissing: boolean;
+  budgetReached: boolean;
+  degradedMode: boolean;
+};
+
+type ServerAiSettings = {
+  serverId: string;
+  enabled: boolean;
+  botDisplayName: string;
+  model: string;
+  systemPrompt: string | null;
+  maxTokensPerReply: number | null;
+  temperature: number | null;
+  invocationPolicy: AiInvocationPolicy;
+  status: ServerAiStatus;
 };
 
 
@@ -300,6 +322,8 @@ export function App() {
   const [systemMessage, setSystemMessage] = useState('Sign in to join chat.');
   const [error, setError] = useState<string | null>(null);
   const [auditLogs, setAuditLogs] = useState<ModerationAuditLog[]>([]);
+  const [aiSettingsByServer, setAiSettingsByServer] = useState<Record<string, ServerAiSettings>>({});
+  const [aiSettingsDraftByServer, setAiSettingsDraftByServer] = useState<Record<string, ServerAiSettings>>({});
 
   const [servers, setServers] = useState<ServerSummary[]>([]);
   const [channels, setChannels] = useState<ChannelSummary[]>([]);
@@ -420,6 +444,10 @@ export function App() {
   );
   const totalDmUnread = Object.values(dmUnreadCounts).reduce((sum, value) => sum + value, 0);
   const activeServer = servers.find((server) => server.id === activeServerId) ?? null;
+  const activeServerAiSettings = activeServerId ? aiSettingsByServer[activeServerId] ?? null : null;
+  const activeServerAiDraft = activeServerId
+    ? aiSettingsDraftByServer[activeServerId] ?? activeServerAiSettings
+    : null;
 
   useEffect(() => {
     activeChannelRef.current = activeChannelId;
@@ -1378,6 +1406,57 @@ export function App() {
     setAuditLogs(data.logs);
   }
 
+  async function loadServerAiSettings(serverId: string) {
+    const res = await authedFetch(`/servers/${serverId}/ai-settings`);
+    if (!res.ok) {
+      return;
+    }
+
+    const data = (await res.json()) as { settings: ServerAiSettings };
+    setAiSettingsByServer((current) => ({ ...current, [serverId]: data.settings }));
+    setAiSettingsDraftByServer((current) => ({ ...current, [serverId]: data.settings }));
+  }
+
+  function updateActiveServerAiDraft(patch: Partial<ServerAiSettings>) {
+    if (!activeServerId || !activeServerAiDraft) {
+      return;
+    }
+
+    setAiSettingsDraftByServer((current) => ({
+      ...current,
+      [activeServerId]: { ...activeServerAiDraft, ...patch },
+    }));
+  }
+
+  async function saveActiveServerAiSettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!activeServerId || !activeServerAiDraft || !isServerOwner) {
+      return;
+    }
+
+    const res = await authedFetch(`/servers/${activeServerId}/ai-settings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        enabled: activeServerAiDraft.enabled,
+        model: activeServerAiDraft.model,
+        systemPrompt: activeServerAiDraft.systemPrompt,
+        temperature: activeServerAiDraft.temperature,
+        maxTokensPerReply: activeServerAiDraft.maxTokensPerReply,
+        invocationPolicy: activeServerAiDraft.invocationPolicy,
+      }),
+    });
+
+    if (!res.ok) {
+      setError('Unable to save AI settings.');
+      return;
+    }
+
+    const data = (await res.json()) as { settings: ServerAiSettings };
+    setAiSettingsByServer((current) => ({ ...current, [activeServerId]: data.settings }));
+    setAiSettingsDraftByServer((current) => ({ ...current, [activeServerId]: data.settings }));
+  }
+
   async function loadDmThreads() {
     const res = await authedFetch('/dm/threads');
     if (!res.ok) {
@@ -1443,6 +1522,8 @@ export function App() {
       setDmMessages([]);
       setChatMode('channel');
       setAuditLogs([]);
+      setAiSettingsByServer({});
+      setAiSettingsDraftByServer({});
       setPendingAttachmentUploads([]);
       setChannelUnreadCounts({});
       setDmUnreadCounts({});
@@ -1471,6 +1552,7 @@ export function App() {
       loadChannels(activeServerId),
       loadMembers(activeServerId),
       loadAuditLogs(activeServerId),
+      loadServerAiSettings(activeServerId),
     ]).catch((reason: unknown) => {
       setError(reason instanceof Error ? reason.message : 'Unable to load server data.');
     });
@@ -3850,6 +3932,96 @@ export function App() {
         </section>
 
         <aside className="sidebar">
+          <h3>AI Settings</h3>
+          {activeServerAiDraft ? (
+            <form className="ai-settings-panel" onSubmit={(event) => void saveActiveServerAiSettings(event)}>
+              <div className="ai-status-badges">
+                <span className={activeServerAiDraft.status.enabled ? 'status-badge success' : 'status-badge'}>enabled</span>
+                <span className={activeServerAiDraft.status.keyMissing ? 'status-badge danger' : 'status-badge'}>key missing</span>
+                <span className={activeServerAiDraft.status.budgetReached ? 'status-badge danger' : 'status-badge'}>budget reached</span>
+                <span className={activeServerAiDraft.status.degradedMode ? 'status-badge warning' : 'status-badge'}>degraded mode</span>
+              </div>
+              <label>
+                <span className="subtle">Enable assistant</span>
+                <input
+                  type="checkbox"
+                  checked={activeServerAiDraft.enabled}
+                  disabled={!isServerOwner}
+                  onChange={(event) => updateActiveServerAiDraft({ enabled: event.target.checked })}
+                />
+              </label>
+              <label>
+                <span className="subtle">Model</span>
+                <select
+                  value={activeServerAiDraft.model}
+                  disabled={!isServerOwner}
+                  onChange={(event) => updateActiveServerAiDraft({ model: event.target.value })}
+                >
+                  {AI_MODEL_OPTIONS.map((model) => (
+                    <option key={model} value={model}>
+                      {model}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span className="subtle">System prompt</span>
+                <textarea
+                  rows={4}
+                  value={activeServerAiDraft.systemPrompt ?? ''}
+                  readOnly={!isServerOwner}
+                  onChange={(event) =>
+                    updateActiveServerAiDraft({
+                      systemPrompt: event.target.value.trim().length > 0 ? event.target.value : null,
+                    })
+                  }
+                />
+              </label>
+              <label>
+                <span className="subtle">Temperature</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={2}
+                  step={0.1}
+                  value={activeServerAiDraft.temperature ?? 0.7}
+                  readOnly={!isServerOwner}
+                  onChange={(event) =>
+                    updateActiveServerAiDraft({ temperature: Number(event.target.value) || 0 })
+                  }
+                />
+              </label>
+              <label>
+                <span className="subtle">Max reply length (tokens)</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={activeServerAiDraft.maxTokensPerReply ?? 512}
+                  readOnly={!isServerOwner}
+                  onChange={(event) =>
+                    updateActiveServerAiDraft({ maxTokensPerReply: Number(event.target.value) || 1 })
+                  }
+                />
+              </label>
+              <label>
+                <span className="subtle">Who can invoke AI</span>
+                <select
+                  value={activeServerAiDraft.invocationPolicy}
+                  disabled={!isServerOwner}
+                  onChange={(event) =>
+                    updateActiveServerAiDraft({ invocationPolicy: event.target.value as AiInvocationPolicy })
+                  }
+                >
+                  <option value="everyone">Everyone</option>
+                  <option value="roles">Roles (coming soon)</option>
+                </select>
+              </label>
+              {isServerOwner ? <button type="submit">Save AI settings</button> : <small className="subtle">Owner-only settings</small>}
+            </form>
+          ) : (
+            <p className="subtle">No AI settings loaded.</p>
+          )}
+
           <h3>Members</h3>
           {isServerOwner && activeServer && (
             <div className="voice-panel-actions">

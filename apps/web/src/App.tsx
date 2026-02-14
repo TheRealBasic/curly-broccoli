@@ -57,6 +57,13 @@ type VoiceRuntimeMetrics = {
   disconnectCauses: Record<string, number>;
 };
 
+type ScreenContentType = 'text' | 'mixed' | 'motion';
+
+type ScreenEncodingPreset = {
+  maxBitrateBps: number;
+  maxFramerate: number;
+};
+
 const AUTH_STORAGE_KEY = 'curly_broccoli_auth';
 const DESKTOP_NOTIFICATIONS_STORAGE_KEY = 'curly_broccoli_desktop_notifications_enabled';
 const TYPING_STOP_DELAY_MS = 1200;
@@ -64,6 +71,13 @@ const HEARTBEAT_INTERVAL_MS = 10_000;
 const HEARTBEAT_TIMEOUT_MS = 20_000;
 const RECONNECT_BASE_DELAY_MS = 1_000;
 const RECONNECT_MAX_DELAY_MS = 12_000;
+const SCREEN_P2P_PARTICIPANT_THRESHOLD = 6;
+const SCREEN_ADAPT_INTERVAL_MS = 4_000;
+const SCREEN_PRESETS: Record<ScreenContentType, ScreenEncodingPreset> = {
+  text: { maxBitrateBps: 600_000, maxFramerate: 8 },
+  mixed: { maxBitrateBps: 1_200_000, maxFramerate: 15 },
+  motion: { maxBitrateBps: 2_500_000, maxFramerate: 30 },
+};
 
 type NotificationPermissionState = 'unsupported' | NotificationPermission;
 
@@ -180,6 +194,8 @@ export function App() {
   const remoteSpeakingDataByUserIdRef = useRef<Map<string, Uint8Array>>(new Map());
   const localScreenStreamRef = useRef<MediaStream | null>(null);
   const screenPeerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const screenSenderByUserIdRef = useRef<Map<string, RTCRtpSender>>(new Map());
+  const screenAdaptationIntervalRef = useRef<number | null>(null);
   const remoteScreenVideoRef = useRef<HTMLVideoElement | null>(null);
 
   const [auth, setAuth] = useState<AuthState | null>(() => loadAuthState());
@@ -224,6 +240,8 @@ export function App() {
   >('idle');
   const [screenShareScopeWarning, setScreenShareScopeWarning] = useState<string | null>(null);
   const [remoteScreenStream, setRemoteScreenStream] = useState<MediaStream | null>(null);
+  const [screenContentType, setScreenContentType] = useState<ScreenContentType>('mixed');
+  const [screenNetworkQuality, setScreenNetworkQuality] = useState<'stable' | 'degraded'>('stable');
   const [activeServerId, setActiveServerId] = useState<string | null>(null);
   const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
   const [serverNameInput, setServerNameInput] = useState('');
@@ -260,6 +278,16 @@ export function App() {
   const voiceParticipants = activeChannelId
     ? (voiceParticipantsByChannel[activeChannelId] ?? [])
     : [];
+
+  useEffect(() => {
+    const senders = Array.from(screenSenderByUserIdRef.current.values());
+    for (const sender of senders) {
+      void applyScreenEncodingPreset(sender, screenContentType, screenNetworkQuality).catch(() => {
+        // ignore sender parameter failures for unsupported browsers
+      });
+    }
+  }, [screenContentType, screenNetworkQuality]);
+
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<(ChatMessage | DmMessage)[]>([]);
   const [searchOffset, setSearchOffset] = useState(0);
@@ -478,7 +506,6 @@ export function App() {
     disposeAudioForUser(userId);
   }
 
-
   function closeScreenPeerConnection(userId: string) {
     const peerConnection = screenPeerConnectionsRef.current.get(userId);
     if (!peerConnection) {
@@ -489,6 +516,98 @@ export function App() {
     peerConnection.ontrack = null;
     peerConnection.close();
     screenPeerConnectionsRef.current.delete(userId);
+    screenSenderByUserIdRef.current.delete(userId);
+  }
+
+  function resolveScreenPreset(contentType: ScreenContentType, quality: 'stable' | 'degraded') {
+    const preset = SCREEN_PRESETS[contentType];
+    if (quality === 'stable') {
+      return preset;
+    }
+
+    return {
+      maxBitrateBps: Math.max(300_000, Math.round(preset.maxBitrateBps * 0.65)),
+      maxFramerate: Math.max(5, Math.round(preset.maxFramerate * 0.7)),
+    } satisfies ScreenEncodingPreset;
+  }
+
+  async function applyScreenEncodingPreset(
+    sender: RTCRtpSender,
+    contentType: ScreenContentType,
+    quality: 'stable' | 'degraded',
+  ) {
+    const parameters = sender.getParameters();
+    const encodings =
+      parameters.encodings && parameters.encodings.length > 0 ? parameters.encodings : [{}];
+    const preset = resolveScreenPreset(contentType, quality);
+    parameters.encodings = encodings.map((encoding) => ({
+      ...encoding,
+      maxBitrate: preset.maxBitrateBps,
+      maxFramerate: preset.maxFramerate,
+    }));
+    await sender.setParameters(parameters);
+  }
+
+  function monitorScreenNetworkAndAdapt() {
+    if (screenAdaptationIntervalRef.current !== null) {
+      window.clearInterval(screenAdaptationIntervalRef.current);
+      screenAdaptationIntervalRef.current = null;
+    }
+
+    screenAdaptationIntervalRef.current = window.setInterval(() => {
+      const senders = Array.from(screenSenderByUserIdRef.current.values());
+      if (senders.length === 0) {
+        return;
+      }
+
+      let degraded = false;
+      for (const sender of senders) {
+        const transport = sender.transport;
+        if (!transport) {
+          continue;
+        }
+        const candidatePair = (
+          transport.iceTransport as
+            | (RTCIceTransport & {
+                getSelectedCandidatePair?: () => {
+                  currentRoundTripTime?: number;
+                  packetsSent?: number;
+                  packetsDiscardedOnSend?: number;
+                } | null;
+              })
+            | null
+        )?.getSelectedCandidatePair?.();
+        if (!candidatePair) {
+          continue;
+        }
+
+        const currentRtt = candidatePair.currentRoundTripTime ?? 0;
+        const packetsSent = candidatePair.packetsSent ?? 0;
+        const packetLoss =
+          packetsSent > 0 ? (candidatePair.packetsDiscardedOnSend ?? 0) / packetsSent : 0;
+        if (currentRtt > 0.25 || packetLoss > 0.03) {
+          degraded = true;
+          break;
+        }
+      }
+
+      const nextQuality = degraded ? 'degraded' : 'stable';
+      setScreenNetworkQuality(nextQuality);
+      for (const sender of senders) {
+        void applyScreenEncodingPreset(sender, screenContentType, nextQuality).catch(() => {
+          // ignore sender parameter failures for unsupported browsers
+        });
+      }
+    }, SCREEN_ADAPT_INTERVAL_MS);
+  }
+
+  function stopScreenAdaptation() {
+    if (screenAdaptationIntervalRef.current !== null) {
+      window.clearInterval(screenAdaptationIntervalRef.current);
+      screenAdaptationIntervalRef.current = null;
+    }
+    screenSenderByUserIdRef.current.clear();
+    setScreenNetworkQuality('stable');
   }
 
   function stopAllScreenShare() {
@@ -505,6 +624,7 @@ export function App() {
     }
 
     setRemoteScreenStream(null);
+    stopScreenAdaptation();
   }
 
   async function createScreenPeerConnection(
@@ -559,7 +679,15 @@ export function App() {
       }
 
       for (const track of stream.getTracks()) {
-        peerConnection.addTrack(track, stream);
+        const sender = peerConnection.addTrack(track, stream);
+        if (track.kind === 'video') {
+          screenSenderByUserIdRef.current.set(targetUserId, sender);
+          void applyScreenEncodingPreset(sender, screenContentType, screenNetworkQuality).catch(
+            () => {
+              // ignore sender parameter failures for unsupported browsers
+            },
+          );
+        }
       }
     }
 
@@ -985,347 +1113,346 @@ export function App() {
       });
 
       socket.addEventListener('message', (event) => {
-      let parsed: ServerEvent;
+        let parsed: ServerEvent;
 
-      try {
-        parsed = JSON.parse(String(event.data)) as ServerEvent;
-      } catch {
-        setError('Received an invalid event from server.');
-        console.error('[ws] invalid_event_json');
-        return;
-      }
-
-      if (parsed.type === 'pong') {
-        if (heartbeatTimeoutRef.current) {
-          window.clearTimeout(heartbeatTimeoutRef.current);
-          heartbeatTimeoutRef.current = null;
-        }
-        return;
-      }
-
-      if (parsed.type === 'chat:history') {
-        if (parsed.payload.channelId === activeChannelRef.current) {
-          setMessages(parsed.payload.messages);
-        }
-      }
-
-      if (parsed.type === 'chat:message') {
-        if (parsed.payload.message.channelId === activeChannelRef.current) {
-          setMessages((prev) => [...prev, parsed.payload.message]);
-        }
-      }
-
-      if (parsed.type === 'dm:history') {
-        if (parsed.payload.threadId === activeDmThreadRef.current) {
-          setDmMessages(parsed.payload.messages);
-        }
-      }
-
-      if (parsed.type === 'dm:message') {
-        setDmThreads((prev) => {
-          const hasThread = prev.some((thread) => thread.id === parsed.payload.message.threadId);
-          if (!hasThread) {
-            return prev;
-          }
-
-          const next = prev.map((thread) =>
-            thread.id === parsed.payload.message.threadId
-              ? { ...thread, lastMessageAt: parsed.payload.message.createdAt }
-              : thread,
-          );
-          next.sort((a, b) => (b.lastMessageAt ?? '').localeCompare(a.lastMessageAt ?? ''));
-          return next;
-        });
-
-        if (parsed.payload.message.threadId === activeDmThreadRef.current) {
-          setDmMessages((prev) => [...prev, parsed.payload.message]);
-        }
-      }
-
-      if (parsed.type === 'presence:sync') {
-        setOnlineUserIdsByServer((prev) => ({
-          ...prev,
-          [parsed.payload.serverId]: parsed.payload.onlineUserIds,
-        }));
-      }
-
-      if (parsed.type === 'presence:user-online') {
-        setOnlineUserIdsByServer((prev) => {
-          const existing = new Set(prev[parsed.payload.serverId] ?? []);
-          existing.add(parsed.payload.userId);
-          return { ...prev, [parsed.payload.serverId]: Array.from(existing) };
-        });
-      }
-
-      if (parsed.type === 'presence:user-offline') {
-        setOnlineUserIdsByServer((prev) => ({
-          ...prev,
-          [parsed.payload.serverId]: (prev[parsed.payload.serverId] ?? []).filter(
-            (userId) => userId !== parsed.payload.userId,
-          ),
-        }));
-      }
-
-      if (parsed.type === 'typing:start') {
-        if (parsed.payload.userId === auth.user.id) {
+        try {
+          parsed = JSON.parse(String(event.data)) as ServerEvent;
+        } catch {
+          setError('Received an invalid event from server.');
+          console.error('[ws] invalid_event_json');
           return;
         }
 
-        setTypingByChannel((prev) => {
-          const current = prev[parsed.payload.channelId] ?? [];
-          if (current.some((item) => item.userId === parsed.payload.userId)) {
-            return prev;
+        if (parsed.type === 'pong') {
+          if (heartbeatTimeoutRef.current) {
+            window.clearTimeout(heartbeatTimeoutRef.current);
+            heartbeatTimeoutRef.current = null;
           }
+          return;
+        }
 
-          return {
+        if (parsed.type === 'chat:history') {
+          if (parsed.payload.channelId === activeChannelRef.current) {
+            setMessages(parsed.payload.messages);
+          }
+        }
+
+        if (parsed.type === 'chat:message') {
+          if (parsed.payload.message.channelId === activeChannelRef.current) {
+            setMessages((prev) => [...prev, parsed.payload.message]);
+          }
+        }
+
+        if (parsed.type === 'dm:history') {
+          if (parsed.payload.threadId === activeDmThreadRef.current) {
+            setDmMessages(parsed.payload.messages);
+          }
+        }
+
+        if (parsed.type === 'dm:message') {
+          setDmThreads((prev) => {
+            const hasThread = prev.some((thread) => thread.id === parsed.payload.message.threadId);
+            if (!hasThread) {
+              return prev;
+            }
+
+            const next = prev.map((thread) =>
+              thread.id === parsed.payload.message.threadId
+                ? { ...thread, lastMessageAt: parsed.payload.message.createdAt }
+                : thread,
+            );
+            next.sort((a, b) => (b.lastMessageAt ?? '').localeCompare(a.lastMessageAt ?? ''));
+            return next;
+          });
+
+          if (parsed.payload.message.threadId === activeDmThreadRef.current) {
+            setDmMessages((prev) => [...prev, parsed.payload.message]);
+          }
+        }
+
+        if (parsed.type === 'presence:sync') {
+          setOnlineUserIdsByServer((prev) => ({
             ...prev,
-            [parsed.payload.channelId]: [
-              ...current,
-              { userId: parsed.payload.userId, username: parsed.payload.username },
-            ],
-          };
-        });
-      }
+            [parsed.payload.serverId]: parsed.payload.onlineUserIds,
+          }));
+        }
 
-      if (parsed.type === 'typing:stop') {
-        setTypingByChannel((prev) => ({
-          ...prev,
-          [parsed.payload.channelId]: (prev[parsed.payload.channelId] ?? []).filter(
-            (item) => item.userId !== parsed.payload.userId,
-          ),
-        }));
-      }
+        if (parsed.type === 'presence:user-online') {
+          setOnlineUserIdsByServer((prev) => {
+            const existing = new Set(prev[parsed.payload.serverId] ?? []);
+            existing.add(parsed.payload.userId);
+            return { ...prev, [parsed.payload.serverId]: Array.from(existing) };
+          });
+        }
 
-      if (parsed.type === 'notification:channel-message') {
-        if (parsed.payload.senderUserId !== auth.user.id) {
-          const isActiveView =
-            chatModeRef.current === 'channel' &&
-            activeChannelRef.current === parsed.payload.channelId;
+        if (parsed.type === 'presence:user-offline') {
+          setOnlineUserIdsByServer((prev) => ({
+            ...prev,
+            [parsed.payload.serverId]: (prev[parsed.payload.serverId] ?? []).filter(
+              (userId) => userId !== parsed.payload.userId,
+            ),
+          }));
+        }
 
-          if (!isActiveView) {
-            setChannelUnreadCounts((prev) => ({
-              ...prev,
-              [parsed.payload.channelId]: (prev[parsed.payload.channelId] ?? 0) + 1,
-            }));
+        if (parsed.type === 'typing:start') {
+          if (parsed.payload.userId === auth.user.id) {
+            return;
           }
 
-          if (
-            desktopNotificationsEnabledRef.current &&
-            notificationPermissionRef.current === 'granted' &&
-            containsMentionForUser(parsed.payload.text, auth.user.username)
-          ) {
-            new Notification(
-              `#${channels.find((item) => item.id === parsed.payload.channelId)?.name ?? 'channel'}`,
-              {
-                body: `${parsed.payload.senderUsername}: ${previewText(parsed.payload.text)}`,
-              },
+          setTypingByChannel((prev) => {
+            const current = prev[parsed.payload.channelId] ?? [];
+            if (current.some((item) => item.userId === parsed.payload.userId)) {
+              return prev;
+            }
+
+            return {
+              ...prev,
+              [parsed.payload.channelId]: [
+                ...current,
+                { userId: parsed.payload.userId, username: parsed.payload.username },
+              ],
+            };
+          });
+        }
+
+        if (parsed.type === 'typing:stop') {
+          setTypingByChannel((prev) => ({
+            ...prev,
+            [parsed.payload.channelId]: (prev[parsed.payload.channelId] ?? []).filter(
+              (item) => item.userId !== parsed.payload.userId,
+            ),
+          }));
+        }
+
+        if (parsed.type === 'notification:channel-message') {
+          if (parsed.payload.senderUserId !== auth.user.id) {
+            const isActiveView =
+              chatModeRef.current === 'channel' &&
+              activeChannelRef.current === parsed.payload.channelId;
+
+            if (!isActiveView) {
+              setChannelUnreadCounts((prev) => ({
+                ...prev,
+                [parsed.payload.channelId]: (prev[parsed.payload.channelId] ?? 0) + 1,
+              }));
+            }
+
+            if (
+              desktopNotificationsEnabledRef.current &&
+              notificationPermissionRef.current === 'granted' &&
+              containsMentionForUser(parsed.payload.text, auth.user.username)
+            ) {
+              new Notification(
+                `#${channels.find((item) => item.id === parsed.payload.channelId)?.name ?? 'channel'}`,
+                {
+                  body: `${parsed.payload.senderUsername}: ${previewText(parsed.payload.text)}`,
+                },
+              );
+            }
+          }
+        }
+
+        if (parsed.type === 'notification:dm-message') {
+          if (parsed.payload.senderUserId !== auth.user.id) {
+            const isActiveView =
+              chatModeRef.current === 'dm' && activeDmThreadRef.current === parsed.payload.threadId;
+            if (!isActiveView) {
+              setDmUnreadCounts((prev) => ({
+                ...prev,
+                [parsed.payload.threadId]: (prev[parsed.payload.threadId] ?? 0) + 1,
+              }));
+            }
+
+            if (
+              desktopNotificationsEnabledRef.current &&
+              notificationPermissionRef.current === 'granted'
+            ) {
+              new Notification(`DM from @${parsed.payload.senderUsername}`, {
+                body: previewText(parsed.payload.text),
+              });
+            }
+          }
+        }
+
+        if (parsed.type === 'system') {
+          setSystemMessage(parsed.payload.text);
+        }
+
+        if (parsed.type === 'voice:participants') {
+          voiceMetricsRef.current.joinSuccesses += 1;
+          refreshVoiceDashboard();
+          setVoiceParticipantsByChannel((prev) => ({
+            ...prev,
+            [parsed.payload.channelId]: parsed.payload.participants,
+          }));
+
+          for (const participant of parsed.payload.participants) {
+            if (participant.userId === auth.user.id) {
+              continue;
+            }
+
+            void createPeerConnection(participant.userId, parsed.payload.channelId, true);
+          }
+        }
+
+        if (parsed.type === 'voice:user-joined') {
+          setVoiceParticipantsByChannel((prev) => {
+            const existing = prev[parsed.payload.channelId] ?? [];
+            if (existing.some((item) => item.userId === parsed.payload.participant.userId)) {
+              return prev;
+            }
+
+            return {
+              ...prev,
+              [parsed.payload.channelId]: [...existing, parsed.payload.participant],
+            };
+          });
+        }
+
+        if (parsed.type === 'voice:user-left') {
+          setVoiceParticipantsByChannel((prev) => ({
+            ...prev,
+            [parsed.payload.channelId]: (prev[parsed.payload.channelId] ?? []).filter(
+              (participant) => participant.userId !== parsed.payload.userId,
+            ),
+          }));
+          closePeerConnection(parsed.payload.userId);
+        }
+
+        if (parsed.type === 'screen:share-start') {
+          setActiveScreenShare({
+            channelId: parsed.payload.channelId,
+            presenter: parsed.payload.presenter,
+          });
+          if (parsed.payload.presenter.userId !== auth.user.id) {
+            setRemoteScreenStream(null);
+          }
+        }
+
+        if (parsed.type === 'screen:share-stop') {
+          for (const userId of Array.from(screenPeerConnectionsRef.current.keys())) {
+            closeScreenPeerConnection(userId);
+          }
+          if (parsed.payload.presenterUserId === auth.user.id) {
+            stopAllScreenShare();
+          }
+          setActiveScreenShare((prev) => {
+            if (!prev || prev.presenter.userId !== parsed.payload.presenterUserId) {
+              return prev;
+            }
+            return null;
+          });
+          setRemoteScreenStream(null);
+          setScreenShareScopeWarning(null);
+          setScreenConsentState('idle');
+        }
+
+        if (parsed.type === 'screen:viewer-joined') {
+          if (parsed.payload.presenterUserId === auth.user.id) {
+            void createScreenPeerConnection(
+              parsed.payload.viewer.userId,
+              parsed.payload.channelId,
+              true,
+              'screen',
             );
           }
         }
-      }
 
-      if (parsed.type === 'notification:dm-message') {
-        if (parsed.payload.senderUserId !== auth.user.id) {
-          const isActiveView =
-            chatModeRef.current === 'dm' && activeDmThreadRef.current === parsed.payload.threadId;
-          if (!isActiveView) {
-            setDmUnreadCounts((prev) => ({
-              ...prev,
-              [parsed.payload.threadId]: (prev[parsed.payload.threadId] ?? 0) + 1,
-            }));
-          }
-
-          if (
-            desktopNotificationsEnabledRef.current &&
-            notificationPermissionRef.current === 'granted'
-          ) {
-            new Notification(`DM from @${parsed.payload.senderUsername}`, {
-              body: previewText(parsed.payload.text),
-            });
-          }
+        if (parsed.type === 'screen:viewer-left') {
+          closeScreenPeerConnection(parsed.payload.userId);
         }
-      }
 
-      if (parsed.type === 'system') {
-        setSystemMessage(parsed.payload.text);
-      }
-
-      if (parsed.type === 'voice:participants') {
-        voiceMetricsRef.current.joinSuccesses += 1;
-        refreshVoiceDashboard();
-        setVoiceParticipantsByChannel((prev) => ({
-          ...prev,
-          [parsed.payload.channelId]: parsed.payload.participants,
-        }));
-
-        for (const participant of parsed.payload.participants) {
-          if (participant.userId === auth.user.id) {
-            continue;
-          }
-
-          void createPeerConnection(participant.userId, parsed.payload.channelId, true);
+        if (parsed.type === 'moderation:audit') {
+          setSystemMessage(`Moderation event: ${parsed.payload.action.replaceAll('_', ' ')}`);
         }
-      }
 
-      if (parsed.type === 'voice:user-joined') {
-        setVoiceParticipantsByChannel((prev) => {
-          const existing = prev[parsed.payload.channelId] ?? [];
-          if (existing.some((item) => item.userId === parsed.payload.participant.userId)) {
-            return prev;
-          }
-
-          return {
-            ...prev,
-            [parsed.payload.channelId]: [...existing, parsed.payload.participant],
-          };
-        });
-      }
-
-      if (parsed.type === 'voice:user-left') {
-        setVoiceParticipantsByChannel((prev) => ({
-          ...prev,
-          [parsed.payload.channelId]: (prev[parsed.payload.channelId] ?? []).filter(
-            (participant) => participant.userId !== parsed.payload.userId,
-          ),
-        }));
-        closePeerConnection(parsed.payload.userId);
-      }
-
-
-      if (parsed.type === 'screen:share-start') {
-        setActiveScreenShare({
-          channelId: parsed.payload.channelId,
-          presenter: parsed.payload.presenter,
-        });
-        if (parsed.payload.presenter.userId !== auth.user.id) {
-          setRemoteScreenStream(null);
-        }
-      }
-
-      if (parsed.type === 'screen:share-stop') {
-        for (const userId of Array.from(screenPeerConnectionsRef.current.keys())) {
-          closeScreenPeerConnection(userId);
-        }
-        if (parsed.payload.presenterUserId === auth.user.id) {
-          stopAllScreenShare();
-        }
-        setActiveScreenShare((prev) => {
-          if (!prev || prev.presenter.userId !== parsed.payload.presenterUserId) {
-            return prev;
-          }
-          return null;
-        });
-        setRemoteScreenStream(null);
-        setScreenShareScopeWarning(null);
-        setScreenConsentState('idle');
-      }
-
-      if (parsed.type === 'screen:viewer-joined') {
-        if (parsed.payload.presenterUserId === auth.user.id) {
-          void createScreenPeerConnection(
-            parsed.payload.viewer.userId,
-            parsed.payload.channelId,
-            true,
-            'screen',
-          );
-        }
-      }
-
-      if (parsed.type === 'screen:viewer-left') {
-        closeScreenPeerConnection(parsed.payload.userId);
-      }
-
-      if (parsed.type === 'moderation:audit') {
-        setSystemMessage(`Moderation event: ${parsed.payload.action.replaceAll('_', ' ')}`);
-      }
-
-      if (parsed.type === 'screen:signal') {
-        const { channelId, fromUserId, description, candidate } = parsed.payload;
-        void (async () => {
-          const socket = socketRef.current;
-          if (!socket || socket.readyState !== WebSocket.OPEN) {
-            return;
-          }
-
-          const peerConnection = await createScreenPeerConnection(
-            fromUserId,
-            channelId,
-            false,
-            'screen',
-          );
-          if (!peerConnection) {
-            return;
-          }
-
-          if (description) {
-            await peerConnection.setRemoteDescription(description);
-            if (description.type === 'offer') {
-              const answer = await peerConnection.createAnswer();
-              await peerConnection.setLocalDescription(answer);
-              socket.send(
-                JSON.stringify({
-                  type: 'screen:signal',
-                  payload: {
-                    channelId,
-                    targetUserId: fromUserId,
-                    streamType: 'screen',
-                    description: answer,
-                  },
-                }),
-              );
+        if (parsed.type === 'screen:signal') {
+          const { channelId, fromUserId, description, candidate } = parsed.payload;
+          void (async () => {
+            const socket = socketRef.current;
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+              return;
             }
-          }
 
-          if (candidate) {
-            await peerConnection.addIceCandidate(candidate);
-          }
-        })().catch(() => {
-          setError('Screen share signaling failed.');
-        });
-      }
-
-      if (parsed.type === 'voice:signal') {
-        const { channelId, fromUserId, description, candidate } = parsed.payload;
-        void (async () => {
-          const peerConnection = await createPeerConnection(fromUserId, channelId, false);
-          if (!peerConnection) {
-            return;
-          }
-
-          if (description) {
-            await peerConnection.setRemoteDescription(description);
-            if (description.type === 'offer') {
-              const answer = await peerConnection.createAnswer();
-              await peerConnection.setLocalDescription(answer);
-              socket.send(
-                JSON.stringify({
-                  type: 'voice:signal',
-                  payload: {
-                    channelId,
-                    targetUserId: fromUserId,
-                    streamType: 'audio',
-                    description: answer,
-                    iceRestart: false,
-                  },
-                }),
-              );
+            const peerConnection = await createScreenPeerConnection(
+              fromUserId,
+              channelId,
+              false,
+              'screen',
+            );
+            if (!peerConnection) {
+              return;
             }
-          }
 
-          if (candidate) {
-            await peerConnection.addIceCandidate(candidate);
-          }
-        })().catch(() => {
-          addDisconnectCause('signal_failure');
-          setError('Voice signaling failed. Try rejoining voice.');
-          console.error('[voice] signal_failure');
-        });
-      }
+            if (description) {
+              await peerConnection.setRemoteDescription(description);
+              if (description.type === 'offer') {
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                socket.send(
+                  JSON.stringify({
+                    type: 'screen:signal',
+                    payload: {
+                      channelId,
+                      targetUserId: fromUserId,
+                      streamType: 'screen',
+                      description: answer,
+                    },
+                  }),
+                );
+              }
+            }
 
-      if (parsed.type === 'error') {
-        setError(parsed.payload.message);
-        console.error('[ws] server_error', parsed.payload.message);
-      }
+            if (candidate) {
+              await peerConnection.addIceCandidate(candidate);
+            }
+          })().catch(() => {
+            setError('Screen share signaling failed.');
+          });
+        }
+
+        if (parsed.type === 'voice:signal') {
+          const { channelId, fromUserId, description, candidate } = parsed.payload;
+          void (async () => {
+            const peerConnection = await createPeerConnection(fromUserId, channelId, false);
+            if (!peerConnection) {
+              return;
+            }
+
+            if (description) {
+              await peerConnection.setRemoteDescription(description);
+              if (description.type === 'offer') {
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                socket.send(
+                  JSON.stringify({
+                    type: 'voice:signal',
+                    payload: {
+                      channelId,
+                      targetUserId: fromUserId,
+                      streamType: 'audio',
+                      description: answer,
+                      iceRestart: false,
+                    },
+                  }),
+                );
+              }
+            }
+
+            if (candidate) {
+              await peerConnection.addIceCandidate(candidate);
+            }
+          })().catch(() => {
+            addDisconnectCause('signal_failure');
+            setError('Voice signaling failed. Try rejoining voice.');
+            console.error('[voice] signal_failure');
+          });
+        }
+
+        if (parsed.type === 'error') {
+          setError(parsed.payload.message);
+          console.error('[ws] server_error', parsed.payload.message);
+        }
       });
 
       socket.addEventListener('close', () => {
@@ -1343,7 +1470,10 @@ export function App() {
         if (shouldReconnectRef.current) {
           const attempt = reconnectAttemptRef.current + 1;
           reconnectAttemptRef.current = attempt;
-          const delay = Math.min(RECONNECT_MAX_DELAY_MS, RECONNECT_BASE_DELAY_MS * 2 ** (attempt - 1));
+          const delay = Math.min(
+            RECONNECT_MAX_DELAY_MS,
+            RECONNECT_BASE_DELAY_MS * 2 ** (attempt - 1),
+          );
           reconnectTimeoutRef.current = window.setTimeout(connectSocket, delay);
         }
       });
@@ -1373,7 +1503,6 @@ export function App() {
     };
   }, [wsUrl, auth?.user.id, activeServerId]);
 
-
   useEffect(() => {
     const video = remoteScreenVideoRef.current;
     if (!video) {
@@ -1402,7 +1531,6 @@ export function App() {
     setVoiceChannelId(null);
     console.info('[voice] leave_local');
   }, [activeChannelId, voiceChannelId]);
-
 
   useEffect(() => {
     if (!activeScreenShare || !activeChannelId) {
@@ -1582,7 +1710,6 @@ export function App() {
     }
   }
 
-
   async function startScreenShare() {
     if (!activeChannelId || voiceChannelId !== activeChannelId) {
       setError('Join voice in this channel before sharing your screen.');
@@ -1591,6 +1718,11 @@ export function App() {
 
     if (activeScreenShare && activeScreenShare.presenter.userId !== auth?.user.id) {
       setError('Another presenter is already sharing a screen.');
+      return;
+    }
+
+    if (voiceParticipants.length > SCREEN_P2P_PARTICIPANT_THRESHOLD) {
+      setError('This room is over the P2P threshold. SFU rollout is planned for larger rooms.');
       return;
     }
 
@@ -1626,7 +1758,9 @@ export function App() {
         };
       }
 
-      socket.send(JSON.stringify({ type: 'screen:share-start', payload: { channelId: activeChannelId } }));
+      socket.send(
+        JSON.stringify({ type: 'screen:share-start', payload: { channelId: activeChannelId } }),
+      );
       setActiveScreenShare({
         channelId: activeChannelId,
         presenter: { userId: auth.user.id, username: auth.user.username },
@@ -1638,13 +1772,13 @@ export function App() {
         }
         void createScreenPeerConnection(participant.userId, activeChannelId, true, 'screen');
       }
+      monitorScreenNetworkAndAdapt();
       setError(null);
     } catch {
       setScreenConsentState('denied');
       setError('Screen share permission is required.');
     }
   }
-
 
   function forceStopScreenShare() {
     if (!activeScreenShare || !activeChannelId) {
@@ -2190,6 +2324,7 @@ export function App() {
                   disabled={
                     voiceChannelId !== activeChannelId ||
                     !!activeScreenShare ||
+                    voiceParticipants.length > SCREEN_P2P_PARTICIPANT_THRESHOLD ||
                     (currentMember ? !currentMember.canShareScreen : false)
                   }
                 >
@@ -2211,9 +2346,29 @@ export function App() {
               Browser consent: <strong>{screenConsentState}</strong> · In-app consent:{' '}
               <strong>{activeScreenShare ? 'active' : 'not sharing'}</strong>
             </p>
+            <label className="screen-preset-control">
+              Screen preset
+              <select
+                value={screenContentType}
+                onChange={(event) => setScreenContentType(event.target.value as ScreenContentType)}
+              >
+                <option value="text">Text/code (8fps · 0.6Mbps)</option>
+                <option value="mixed">Mixed content (15fps · 1.2Mbps)</option>
+                <option value="motion">Motion/video (30fps · 2.5Mbps)</option>
+              </select>
+            </label>
+            <p className="subtle">
+              Network adaptation: <strong>{screenNetworkQuality}</strong> (packet loss + RTT aware)
+            </p>
+            <p className="subtle">
+              Topology: P2P up to {SCREEN_P2P_PARTICIPANT_THRESHOLD} participants. Planned SFU
+              migration above this threshold.
+            </p>
             {screenShareScopeWarning && <p className="subtle">{screenShareScopeWarning}</p>}
             {(currentMember ? !currentMember.canShareScreen : false) && (
-              <p className="subtle">Role gate active: you do not have the "Can share screen" permission.</p>
+              <p className="subtle">
+                Role gate active: you do not have the "Can share screen" permission.
+              </p>
             )}
           </div>
           {activeScreenShare?.presenter.userId === auth.user.id && (
@@ -2246,8 +2401,12 @@ export function App() {
               .map((participant) => (
                 <span key={participant.userId} className="voice-chip">
                   {participant.username}
-                  <strong className="voice-state">{peerStateByUserId[participant.userId] ?? 'connecting'}</strong>
-                  {speakingByUserId[participant.userId] && <span className="speaking-dot" aria-label="speaking" />}
+                  <strong className="voice-state">
+                    {peerStateByUserId[participant.userId] ?? 'connecting'}
+                  </strong>
+                  {speakingByUserId[participant.userId] && (
+                    <span className="speaking-dot" aria-label="speaking" />
+                  )}
                   <label className="voice-volume">
                     Vol
                     <input
@@ -2333,7 +2492,12 @@ export function App() {
                   <strong>{activeScreenShare.presenter.username}</strong>
                   <span className="subtle">is sharing their screen</span>
                 </header>
-                <video ref={remoteScreenVideoRef} autoPlay muted={activeScreenShare.presenter.userId === auth.user.id} playsInline />
+                <video
+                  ref={remoteScreenVideoRef}
+                  autoPlay
+                  muted={activeScreenShare.presenter.userId === auth.user.id}
+                  playsInline
+                />
               </article>
             )}
             {chatMode === 'channel' && !activeChannelId && (

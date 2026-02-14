@@ -33,6 +33,13 @@ type ModerationAuditLog = {
   createdAt: string;
 };
 
+type PendingImageUpload = {
+  localId: string;
+  fileName: string;
+  previewUrl: string;
+  attachmentId: string;
+};
+
 const AUTH_STORAGE_KEY = 'curly_broccoli_auth';
 const TYPING_STOP_DELAY_MS = 1200;
 
@@ -57,6 +64,19 @@ function saveAuthState(value: AuthState | null) {
   }
 
   localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(value));
+}
+
+function fileToBase64(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Unable to read file.'));
+    reader.onload = () => {
+      const result = String(reader.result ?? '');
+      const encoded = result.includes(',') ? result.split(',')[1] : '';
+      resolve(encoded);
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 export function App() {
@@ -95,6 +115,7 @@ export function App() {
   const [dmMessages, setDmMessages] = useState<DmMessage[]>([]);
   const [dmUsernameInput, setDmUsernameInput] = useState('');
   const [chatMode, setChatMode] = useState<'channel' | 'dm'>('channel');
+  const [pendingImageUploads, setPendingImageUploads] = useState<PendingImageUpload[]>([]);
 
   const wsUrl = useMemo(() => {
     if (!auth?.accessToken) {
@@ -241,6 +262,7 @@ export function App() {
       setDmMessages([]);
       setChatMode('channel');
       setAuditLogs([]);
+      setPendingImageUploads([]);
       return;
     }
 
@@ -415,6 +437,7 @@ export function App() {
       return;
     }
 
+    setPendingImageUploads([]);
     setMessages([]);
     socket.send(
       JSON.stringify({
@@ -481,10 +504,51 @@ export function App() {
     socket.send(
       JSON.stringify({
         type: 'chat:send',
-        payload: { text },
+        payload: {
+          text,
+          attachmentIds: pendingImageUploads.map((item) => item.attachmentId),
+        },
       }),
     );
     setDraft('');
+    setPendingImageUploads([]);
+    setError(null);
+  }
+
+  async function uploadImage(file: File) {
+    if (!activeChannelId) {
+      setError('Select a channel before uploading images.');
+      return;
+    }
+
+    const base64Data = await fileToBase64(file);
+
+    const res = await authedFetch('/uploads/images', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        channelId: activeChannelId,
+        fileName: file.name,
+        mimeType: file.type,
+        fileDataBase64: base64Data,
+      }),
+    });
+
+    if (!res.ok) {
+      setError('Unable to upload image.');
+      return;
+    }
+
+    const data = (await res.json()) as { attachment: { id: string } };
+    setPendingImageUploads((prev) => [
+      ...prev,
+      {
+        localId: crypto.randomUUID(),
+        fileName: file.name,
+        previewUrl: URL.createObjectURL(file),
+        attachmentId: data.attachment.id,
+      },
+    ]);
     setError(null);
   }
 
@@ -864,6 +928,20 @@ export function App() {
                   <time>{new Date(message.createdAt).toLocaleTimeString()}</time>
                 </header>
                 <p>{message.text}</p>
+                {'attachments' in message && message.attachments.length > 0 && (
+                  <div className="attachment-grid">
+                    {message.attachments.map((attachment) => (
+                      <a
+                        key={attachment.id}
+                        href={`${apiBase}${attachment.url}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        <img src={`${apiBase}${attachment.url}`} alt={attachment.fileName} />
+                      </a>
+                    ))}
+                  </div>
+                )}
                 {'user' in message && chatMode === 'channel' && (
                   <div className="message-actions">
                     <button type="button" onClick={() => reportMessage(message.id)}>
@@ -946,17 +1024,46 @@ export function App() {
               aria-label="Message"
               maxLength={300}
             />
+            {chatMode === 'channel' && (
+              <label className="upload-button">
+                Image
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    event.currentTarget.value = '';
+                    if (!file) {
+                      return;
+                    }
+
+                    void uploadImage(file);
+                  }}
+                  hidden
+                />
+              </label>
+            )}
             <button
               type="submit"
               disabled={
                 connectionState !== 'open' ||
-                !draft.trim() ||
+                (!draft.trim() && pendingImageUploads.length === 0) ||
                 (chatMode === 'dm' ? !activeDmThreadId : !activeChannelId)
               }
             >
               Send
             </button>
           </form>
+          {chatMode === 'channel' && pendingImageUploads.length > 0 && (
+            <div className="attachment-grid pending-uploads">
+              {pendingImageUploads.map((item) => (
+                <figure key={item.localId}>
+                  <img src={item.previewUrl} alt={item.fileName} />
+                  <figcaption>{item.fileName}</figcaption>
+                </figure>
+              ))}
+            </div>
+          )}
         </section>
 
         <aside className="sidebar">

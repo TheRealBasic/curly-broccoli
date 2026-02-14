@@ -17,6 +17,7 @@ import {
   canAccessDmThread,
   chatHistoryLimit,
   createChannel,
+  createMessageAttachment,
   createOrGetDmThread,
   createServer,
   createUser,
@@ -31,6 +32,7 @@ import {
   isMutedInServer,
   listChannelsForServer,
   listDmThreadsForUser,
+  listMessageAttachmentsByIds,
   listModerationAuditLogs,
   listServerMembers,
   listServersForUser,
@@ -72,6 +74,8 @@ const app = createApp({
   listDmThreadsForUser,
   fetchRecentDmMessages,
   canAccessDmThread,
+  canAccessChannel,
+  createMessageAttachment,
 });
 const server = http.createServer(app);
 
@@ -585,11 +589,13 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
     return;
   }
 
-  const text = event.payload?.text?.trim();
-  if (!text) {
+  const text = event.payload?.text?.trim() ?? '';
+  const attachmentIds = Array.from(new Set(event.payload?.attachmentIds ?? [])).filter(Boolean);
+
+  if (!text && attachmentIds.length === 0) {
     sendEvent(socket, {
       type: 'error',
-      payload: { message: 'Message cannot be empty.' },
+      payload: { message: 'Message must include text or an image.' },
     });
     return;
   }
@@ -636,11 +642,26 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
     userId: currentUser.userId,
     user: currentUser.username,
     text,
+    attachments: [],
     createdAt: new Date().toISOString(),
   };
 
   try {
-    const message = await saveMessage(messageToSave);
+    if (attachmentIds.length > 0) {
+      const attachments = await listMessageAttachmentsByIds(attachmentIds, currentUser.userId);
+      if (attachments.length !== attachmentIds.length) {
+        sendEvent(socket, {
+          type: 'error',
+          payload: { message: 'Some attachments are invalid or unavailable.' },
+        });
+        return;
+      }
+    }
+
+    const message = await saveMessage({
+      ...messageToSave,
+      attachmentIds,
+    });
     stopTypingForSocket(socket, activeChannelId);
     broadcastToChannel(activeChannelId, {
       type: 'chat:message',

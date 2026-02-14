@@ -1,6 +1,8 @@
 import cors from 'cors';
 import express from 'express';
 import { randomUUID } from 'node:crypto';
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import {
   APP_NAME,
   type ChannelSummary,
@@ -129,6 +131,21 @@ type AppDependencies = {
   listDmThreadsForUser: (userId: string) => Promise<DmThreadSummary[]>;
   fetchRecentDmMessages: (threadId: string, limit?: number) => Promise<DmMessage[]>;
   canAccessDmThread: (threadId: string, userId: string) => Promise<boolean>;
+  canAccessChannel: (channelId: string, userId: string) => Promise<boolean>;
+  createMessageAttachment: (attachment: {
+    id: string;
+    uploadedByUserId: string;
+    fileName: string;
+    mimeType: string;
+    sizeBytes: number;
+    storagePath: string;
+  }) => Promise<{
+    id: string;
+    fileName: string;
+    mimeType: string;
+    sizeBytes: number;
+    url: string;
+  }>;
 };
 
 function validateAuthInput(username: string, password: string) {
@@ -162,8 +179,11 @@ function normalizeChannelName(name: string) {
 
 export function createApp(deps: AppDependencies) {
   const app = express();
+  const uploadsDir = path.resolve(process.cwd(), 'uploads');
+  const maxImageSizeBytes = 5 * 1024 * 1024;
   app.use(cors());
-  app.use(express.json());
+  app.use(express.json({ limit: '10mb' }));
+  app.use('/uploads', express.static(uploadsDir));
 
   function requireAuth(req: express.Request, res: express.Response) {
     const token = readBearerToken(req.header('authorization'));
@@ -348,6 +368,65 @@ export function createApp(deps: AppDependencies) {
 
     const messages = await deps.fetchRecentMessages(channelId, limit);
     res.json({ messages });
+  });
+
+  app.post('/uploads/images', async (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) {
+      return;
+    }
+
+    const channelId = String(req.body?.channelId ?? '').trim();
+    const originalName = String(req.body?.fileName ?? '').trim();
+    const mimeType = String(req.body?.mimeType ?? '')
+      .trim()
+      .toLowerCase();
+    const base64Data = String(req.body?.fileDataBase64 ?? '').trim();
+
+    if (!channelId) {
+      res.status(400).json({ error: 'channelId is required.' });
+      return;
+    }
+
+    if (!originalName || !mimeType || !base64Data) {
+      res.status(400).json({ error: 'fileName, mimeType and fileDataBase64 are required.' });
+      return;
+    }
+
+    if (!mimeType.startsWith('image/')) {
+      res.status(415).json({ error: 'Only image files are allowed.' });
+      return;
+    }
+
+    const allowed = await deps.canAccessChannel(channelId, auth.userId);
+    if (!allowed) {
+      res.status(403).json({ error: 'You cannot upload to this channel.' });
+      return;
+    }
+
+    const fileBuffer = Buffer.from(base64Data, 'base64');
+    if (fileBuffer.length === 0 || fileBuffer.length > maxImageSizeBytes) {
+      res.status(400).json({ error: 'Image must be between 1 byte and 5MB.' });
+      return;
+    }
+
+    const safeName = originalName.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const fileName = `${randomUUID()}-${safeName}`;
+    const storagePath = path.posix.join('uploads', fileName);
+
+    await mkdir(uploadsDir, { recursive: true });
+    await writeFile(path.join(uploadsDir, fileName), fileBuffer);
+
+    const attachment = await deps.createMessageAttachment({
+      id: randomUUID(),
+      uploadedByUserId: auth.userId,
+      fileName: originalName,
+      mimeType,
+      sizeBytes: fileBuffer.length,
+      storagePath,
+    });
+
+    res.status(201).json({ attachment });
   });
 
   app.get('/servers', async (req, res) => {

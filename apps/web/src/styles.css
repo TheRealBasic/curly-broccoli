@@ -350,3 +350,39 @@ h1 {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+.voice-panel {
+  border: 1px solid #d1d5db;
+  border-radius: 0.5rem;
+  padding: 0.6rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.6rem;
+}
+
+.voice-panel button {
+  border: none;
+  border-radius: 0.4rem;
+  padding: 0.5rem 0.8rem;
+  background: #0f766e;
+  color: #fff;
+  cursor: pointer;
+}
+
+.voice-participants {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.6rem;
+}
+
+.voice-chip {
+  border: 1px solid #99f6e4;
+  background: #ccfbf1;
+  color: #134e4a;
+  border-radius: 999px;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.8rem;
+}

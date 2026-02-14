@@ -7,6 +7,7 @@ import {
   type DmThreadSummary,
   type ServerEvent,
   type ServerMember,
+  type VoiceParticipant,
   type ServerSummary,
 } from '@curly-broccoli/shared';
 
@@ -131,6 +132,9 @@ export function App() {
   const chatModeRef = useRef<'channel' | 'dm'>('channel');
   const desktopNotificationsEnabledRef = useRef(false);
   const notificationPermissionRef = useRef<NotificationPermissionState>('unsupported');
+  const localVoiceStreamRef = useRef<MediaStream | null>(null);
+  const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const remoteAudioByUserIdRef = useRef<Map<string, HTMLAudioElement>>(new Map());
 
   const [auth, setAuth] = useState<AuthState | null>(() => loadAuthState());
   const [authMode, setAuthMode] = useState<AuthMode>('login');
@@ -150,6 +154,10 @@ export function App() {
   const [typingByChannel, setTypingByChannel] = useState<
     Record<string, { userId: string; username: string }[]>
   >({});
+  const [voiceParticipantsByChannel, setVoiceParticipantsByChannel] = useState<
+    Record<string, VoiceParticipant[]>
+  >({});
+  const [voiceChannelId, setVoiceChannelId] = useState<string | null>(null);
   const [activeServerId, setActiveServerId] = useState<string | null>(null);
   const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
   const [serverNameInput, setServerNameInput] = useState('');
@@ -183,6 +191,9 @@ export function App() {
   }, [apiBase, auth?.accessToken]);
 
   const typingUsers = activeChannelId ? (typingByChannel[activeChannelId] ?? []) : [];
+  const voiceParticipants = activeChannelId
+    ? (voiceParticipantsByChannel[activeChannelId] ?? [])
+    : [];
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<(ChatMessage | DmMessage)[]>([]);
   const [searchOffset, setSearchOffset] = useState(0);
@@ -221,6 +232,137 @@ export function App() {
   useEffect(() => {
     notificationPermissionRef.current = notificationPermission;
   }, [notificationPermission]);
+
+  function disposeAudioForUser(userId: string) {
+    const audio = remoteAudioByUserIdRef.current.get(userId);
+    if (audio) {
+      audio.pause();
+      audio.srcObject = null;
+      remoteAudioByUserIdRef.current.delete(userId);
+    }
+  }
+
+  function closePeerConnection(userId: string) {
+    const peerConnection = peerConnectionsRef.current.get(userId);
+    if (peerConnection) {
+      peerConnection.ontrack = null;
+      peerConnection.onicecandidate = null;
+      peerConnection.close();
+      peerConnectionsRef.current.delete(userId);
+    }
+
+    disposeAudioForUser(userId);
+  }
+
+  function stopAllVoice() {
+    for (const userId of Array.from(peerConnectionsRef.current.keys())) {
+      closePeerConnection(userId);
+    }
+
+    const localStream = localVoiceStreamRef.current;
+    if (localStream) {
+      for (const track of localStream.getTracks()) {
+        track.stop();
+      }
+      localVoiceStreamRef.current = null;
+    }
+  }
+
+  async function ensureLocalVoiceStream() {
+    if (localVoiceStreamRef.current) {
+      return localVoiceStreamRef.current;
+    }
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        noiseSuppression: true,
+        echoCancellation: true,
+        autoGainControl: true,
+      },
+      video: false,
+    });
+    localVoiceStreamRef.current = stream;
+    return stream;
+  }
+
+  async function createPeerConnection(
+    targetUserId: string,
+    channelId: string,
+    createOffer: boolean,
+  ) {
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN || !auth) {
+      return null;
+    }
+
+    if (peerConnectionsRef.current.has(targetUserId)) {
+      return peerConnectionsRef.current.get(targetUserId) ?? null;
+    }
+
+    const stream = await ensureLocalVoiceStream();
+    const peerConnection = new RTCPeerConnection({
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+    });
+
+    for (const track of stream.getTracks()) {
+      peerConnection.addTrack(track, stream);
+    }
+
+    peerConnection.ontrack = (event) => {
+      const [remoteStream] = event.streams;
+      if (!remoteStream) {
+        return;
+      }
+
+      let audio = remoteAudioByUserIdRef.current.get(targetUserId);
+      if (!audio) {
+        audio = new Audio();
+        audio.autoplay = true;
+        remoteAudioByUserIdRef.current.set(targetUserId, audio);
+      }
+
+      audio.srcObject = remoteStream;
+      void audio.play().catch(() => {
+        setError('Click anywhere on the page once to allow voice playback.');
+      });
+    };
+
+    peerConnection.onicecandidate = (event) => {
+      if (!event.candidate) {
+        return;
+      }
+
+      socket.send(
+        JSON.stringify({
+          type: 'voice:signal',
+          payload: {
+            channelId,
+            targetUserId,
+            candidate: event.candidate.toJSON(),
+          },
+        }),
+      );
+    };
+
+    peerConnectionsRef.current.set(targetUserId, peerConnection);
+
+    if (createOffer) {
+      const offer = await peerConnection.createOffer();
+      await peerConnection.setLocalDescription(offer);
+      socket.send(
+        JSON.stringify({
+          type: 'voice:signal',
+          payload: {
+            channelId,
+            targetUserId,
+            description: offer,
+          },
+        }),
+      );
+    }
+
+    return peerConnection;
+  }
 
   function updateAuth(next: AuthState | null) {
     setAuth(next);
@@ -337,6 +479,8 @@ export function App() {
       setMembers([]);
       setOnlineUserIdsByServer({});
       setTypingByChannel({});
+      setVoiceParticipantsByChannel({});
+      setVoiceChannelId(null);
       setActiveServerId(null);
       setActiveChannelId(null);
       setSystemMessage('Sign in to join chat.');
@@ -553,22 +697,113 @@ export function App() {
         setSystemMessage(parsed.payload.text);
       }
 
+      if (parsed.type === 'voice:participants') {
+        setVoiceParticipantsByChannel((prev) => ({
+          ...prev,
+          [parsed.payload.channelId]: parsed.payload.participants,
+        }));
+
+        for (const participant of parsed.payload.participants) {
+          if (participant.userId === auth.user.id) {
+            continue;
+          }
+
+          void createPeerConnection(participant.userId, parsed.payload.channelId, true);
+        }
+      }
+
+      if (parsed.type === 'voice:user-joined') {
+        setVoiceParticipantsByChannel((prev) => {
+          const existing = prev[parsed.payload.channelId] ?? [];
+          if (existing.some((item) => item.userId === parsed.payload.participant.userId)) {
+            return prev;
+          }
+
+          return {
+            ...prev,
+            [parsed.payload.channelId]: [...existing, parsed.payload.participant],
+          };
+        });
+      }
+
+      if (parsed.type === 'voice:user-left') {
+        setVoiceParticipantsByChannel((prev) => ({
+          ...prev,
+          [parsed.payload.channelId]: (prev[parsed.payload.channelId] ?? []).filter(
+            (participant) => participant.userId !== parsed.payload.userId,
+          ),
+        }));
+        closePeerConnection(parsed.payload.userId);
+      }
+
+      if (parsed.type === 'voice:signal') {
+        const { channelId, fromUserId, description, candidate } = parsed.payload;
+        void (async () => {
+          const peerConnection = await createPeerConnection(fromUserId, channelId, false);
+          if (!peerConnection) {
+            return;
+          }
+
+          if (description) {
+            await peerConnection.setRemoteDescription(description);
+            if (description.type === 'offer') {
+              const answer = await peerConnection.createAnswer();
+              await peerConnection.setLocalDescription(answer);
+              socket.send(
+                JSON.stringify({
+                  type: 'voice:signal',
+                  payload: {
+                    channelId,
+                    targetUserId: fromUserId,
+                    description: answer,
+                  },
+                }),
+              );
+            }
+          }
+
+          if (candidate) {
+            await peerConnection.addIceCandidate(candidate);
+          }
+        })().catch(() => {
+          setError('Voice signaling failed. Try rejoining voice.');
+        });
+      }
+
       if (parsed.type === 'error') {
         setError(parsed.payload.message);
       }
     });
 
     socket.addEventListener('close', () => {
+      stopAllVoice();
+      setVoiceChannelId(null);
       setConnectionState('closed');
       setError('Disconnected from chat server.');
     });
 
     return () => {
       sendTypingStop();
+      socket.send(JSON.stringify({ type: 'voice:leave-channel', payload: {} }));
+      stopAllVoice();
       socket.close();
       socketRef.current = null;
     };
   }, [wsUrl, auth?.user.id]);
+
+  useEffect(() => {
+    if (!voiceChannelId || !activeChannelId || voiceChannelId === activeChannelId) {
+      return;
+    }
+
+    const socket = socketRef.current;
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: 'voice:leave-channel', payload: {} }));
+    }
+
+    stopAllVoice();
+    setVoiceChannelId(null);
+  }, [activeChannelId, voiceChannelId]);
 
   useEffect(() => {
     if (activeChannelId) {
@@ -675,7 +910,6 @@ export function App() {
     setError(null);
   }
 
-
   async function runSearch(offset = 0) {
     const query = searchQuery.trim();
     if (!query) {
@@ -710,6 +944,39 @@ export function App() {
     } finally {
       setIsSearching(false);
     }
+  }
+
+  async function joinVoice() {
+    if (!activeChannelId) {
+      return;
+    }
+
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      setError('Voice needs an active realtime connection.');
+      return;
+    }
+
+    try {
+      await ensureLocalVoiceStream();
+      socket.send(
+        JSON.stringify({ type: 'voice:join-channel', payload: { channelId: activeChannelId } }),
+      );
+      setVoiceChannelId(activeChannelId);
+      setError(null);
+    } catch {
+      setError('Microphone access is required for voice chat.');
+    }
+  }
+
+  function leaveVoice() {
+    const socket = socketRef.current;
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: 'voice:leave-channel', payload: {} }));
+    }
+
+    stopAllVoice();
+    setVoiceChannelId(null);
   }
 
   function sendMessage() {
@@ -1172,6 +1439,37 @@ export function App() {
         </aside>
 
         <section className="chat-panel">
+          <section className="voice-panel">
+            <div>
+              <strong>Voice</strong>
+              <p className="subtle">
+                {voiceChannelId === activeChannelId
+                  ? `Connected in #${channels.find((channel) => channel.id === activeChannelId)?.name ?? 'channel'}`
+                  : 'Join voice for the active channel'}
+              </p>
+            </div>
+            {voiceChannelId === activeChannelId ? (
+              <button type="button" onClick={leaveVoice}>
+                Leave voice
+              </button>
+            ) : (
+              <button type="button" onClick={() => void joinVoice()} disabled={!activeChannelId}>
+                Join voice
+              </button>
+            )}
+          </section>
+          <div className="voice-participants">
+            {voiceParticipants
+              .filter((participant) => participant.userId !== auth.user.id)
+              .map((participant) => (
+                <span key={participant.userId} className="voice-chip">
+                  {participant.username}
+                </span>
+              ))}
+            {voiceChannelId === activeChannelId && voiceParticipants.length <= 1 && (
+              <span className="subtle">No other participants yet.</span>
+            )}
+          </div>
           <form
             className="inline-form search-bar"
             onSubmit={(event) => {
@@ -1231,7 +1529,9 @@ export function App() {
             {((chatMode === 'channel' && activeChannelId) ||
               (chatMode === 'dm' && activeDmThreadId)) &&
               displayedMessages.length === 0 && (
-                <p className="empty">{showingSearchResults ? 'No matching messages.' : 'No messages yet.'}</p>
+                <p className="empty">
+                  {showingSearchResults ? 'No matching messages.' : 'No messages yet.'}
+                </p>
               )}
             {displayedMessages.map((message) => (
               <article key={message.id} className="message">

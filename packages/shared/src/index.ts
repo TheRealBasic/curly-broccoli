@@ -52,6 +52,11 @@ export type DmMessage = {
   createdAt: string;
 };
 
+export type VoiceParticipant = {
+  userId: string;
+  username: string;
+};
+
 export type ClientEvent =
   | {
       type: 'chat:join-channel';
@@ -84,6 +89,28 @@ export type ClientEvent =
   | {
       type: 'ping';
       payload?: Record<string, never>;
+    }
+  | {
+      type: 'voice:join-channel';
+      payload: { channelId: string };
+    }
+  | {
+      type: 'voice:leave-channel';
+      payload?: Record<string, never>;
+    }
+  | {
+      type: 'voice:signal';
+      payload: {
+        channelId: string;
+        targetUserId: string;
+        description?: { type: string; sdp?: string };
+        candidate?: {
+          candidate: string;
+          sdpMid?: string | null;
+          sdpMLineIndex?: number | null;
+          usernameFragment?: string | null;
+        };
+      };
     };
 
 export type ServerEvent =
@@ -163,4 +190,30 @@ export type ServerEvent =
   | {
       type: 'pong';
       payload: Record<string, never>;
+    }
+  | {
+      type: 'voice:participants';
+      payload: { channelId: string; participants: VoiceParticipant[] };
+    }
+  | {
+      type: 'voice:user-joined';
+      payload: { channelId: string; participant: VoiceParticipant };
+    }
+  | {
+      type: 'voice:user-left';
+      payload: { channelId: string; userId: string };
+    }
+  | {
+      type: 'voice:signal';
+      payload: {
+        channelId: string;
+        fromUserId: string;
+        description?: { type: string; sdp?: string };
+        candidate?: {
+          candidate: string;
+          sdpMid?: string | null;
+          sdpMLineIndex?: number | null;
+          usernameFragment?: string | null;
+        };
+      };
     };

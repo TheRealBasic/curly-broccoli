@@ -140,12 +140,31 @@ h1 {
   margin-top: 0.5rem;
 }
 
+.attachment-card {
+  text-decoration: none;
+  color: inherit;
+}
+
 .attachment-grid img {
   width: 100%;
   height: 110px;
   object-fit: cover;
   border-radius: 0.4rem;
   border: 1px solid #d1d5db;
+}
+
+.attachment-card.file {
+  display: flex;
+  align-items: center;
+  border: 1px solid #d1d5db;
+  border-radius: 0.4rem;
+  padding: 0.5rem;
+  background: #f9fafb;
+}
+
+.file-attachment-label {
+  font-size: 0.85rem;
+  word-break: break-all;
 }
 
 .pending-uploads {
@@ -160,6 +179,17 @@ h1 {
   font-size: 0.75rem;
   color: #4b5563;
   margin-top: 0.2rem;
+}
+
+.pending-file-icon {
+  width: 100%;
+  min-height: 110px;
+  border-radius: 0.4rem;
+  border: 1px solid #d1d5db;
+  display: grid;
+  place-items: center;
+  background: #f3f4f6;
+  font-size: 2rem;
 }
 
 .composer {

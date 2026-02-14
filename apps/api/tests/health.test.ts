@@ -43,7 +43,14 @@ const baseDeps = {
     .mockResolvedValue({ messages: [], nextCursor: null, prevCursor: null }),
   canAccessDmThread: vi.fn<() => Promise<boolean>>().mockResolvedValue(true),
   canAccessChannel: vi.fn<() => Promise<boolean>>().mockResolvedValue(true),
-  createMessageAttachment: vi.fn(),
+  createMessageAttachment: vi.fn().mockResolvedValue({
+    id: 'attachment-1',
+    fileName: 'upload.bin',
+    mimeType: 'application/octet-stream',
+    category: 'other',
+    sizeBytes: 10,
+    url: '/uploads/upload.bin',
+  }),
   deleteMessageById: vi.fn(),
   updateMessageById: vi.fn(),
   reportMessageById: vi.fn(),
@@ -218,6 +225,73 @@ describe('API permission checks', () => {
       });
 
     expect(res.status).toBe(403);
+  });
+
+
+
+  it('uploads multipart attachments through the generalized endpoint', async () => {
+    const { createApp } = await import('../src/app.js');
+    const createMessageAttachment = vi.fn().mockResolvedValue({
+      id: 'attachment-1',
+      fileName: 'notes.txt',
+      mimeType: 'text/plain',
+      category: 'document',
+      sizeBytes: 5,
+      url: '/uploads/notes.txt',
+    });
+    const app = createApp({
+      ...baseDeps,
+      createMessageAttachment,
+    });
+
+    const token = createAccessToken({ id: 'user-1', username: 'alice' });
+    const res = await request(app)
+      .post('/uploads/attachments')
+      .set('Authorization', `Bearer ${token}`)
+      .field('channelId', 'channel-1')
+      .attach('file', Buffer.from('hello'), { filename: 'notes.txt', contentType: 'text/plain' });
+
+    expect(res.status).toBe(201);
+    expect(createMessageAttachment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        uploadedByUserId: 'user-1',
+        fileName: 'notes.txt',
+        mimeType: 'text/plain',
+        category: 'document',
+      }),
+    );
+  });
+
+  it('rejects multipart attachments with unsupported mime type', async () => {
+    const { createApp } = await import('../src/app.js');
+    const app = createApp(baseDeps);
+
+    const token = createAccessToken({ id: 'user-1', username: 'alice' });
+    const res = await request(app)
+      .post('/uploads/attachments')
+      .set('Authorization', `Bearer ${token}`)
+      .field('channelId', 'channel-1')
+      .attach('file', Buffer.from('ok'), { filename: 'archive.tar', contentType: 'model/gltf-binary' });
+
+    expect(res.status).toBe(415);
+  });
+
+
+  it('rejects multipart attachments that exceed category size limits', async () => {
+    const { createApp } = await import('../src/app.js');
+    const app = createApp(baseDeps);
+
+    const token = createAccessToken({ id: 'user-1', username: 'alice' });
+    const res = await request(app)
+      .post('/uploads/attachments')
+      .set('Authorization', `Bearer ${token}`)
+      .field('channelId', 'channel-1')
+      .attach('file', Buffer.alloc(11 * 1024 * 1024, 1), {
+        filename: 'large.txt',
+        contentType: 'text/plain',
+      });
+
+    expect(res.status).toBe(400);
   });
 
   it('edits a message and writes audit log', async () => {

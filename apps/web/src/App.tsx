@@ -8,6 +8,7 @@ import {
   type ServerEvent,
   type ServerMember,
   type VoiceParticipant,
+  type AttachmentCategory,
   type ServerSummary,
   type StreamType,
 } from '@curly-broccoli/shared';
@@ -43,11 +44,15 @@ type ModerationAuditLog = {
   createdAt: string;
 };
 
-type PendingImageUpload = {
+type PendingAttachmentUpload = {
   localId: string;
   fileName: string;
-  previewUrl: string;
-  attachmentId: string;
+  mimeType: string;
+  category: AttachmentCategory;
+  progress: number;
+  status: 'uploading' | 'uploaded' | 'failed';
+  previewUrl: string | null;
+  attachmentId?: string;
 };
 
 type PeerConnectionHealth = 'connecting' | 'connected' | 'failed' | 'restarting';
@@ -145,17 +150,20 @@ function previewText(text: string) {
   return normalized.length > 70 ? `${normalized.slice(0, 67)}...` : normalized;
 }
 
-function fileToBase64(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error('Unable to read file.'));
-    reader.onload = () => {
-      const result = String(reader.result ?? '');
-      const encoded = result.includes(',') ? result.split(',')[1] : '';
-      resolve(encoded);
-    };
-    reader.readAsDataURL(file);
-  });
+function deriveAttachmentCategory(mimeType: string): AttachmentCategory {
+  if (mimeType.startsWith('image/')) return 'image';
+  if (mimeType.startsWith('audio/')) return 'audio';
+  if (mimeType.startsWith('video/')) return 'video';
+  if (mimeType.startsWith('text/') || mimeType.startsWith('application/')) return 'document';
+  return 'other';
+}
+
+function attachmentIcon(category: AttachmentCategory) {
+  if (category === 'audio') return '🎵';
+  if (category === 'video') return '🎬';
+  if (category === 'document') return '📄';
+  if (category === 'other') return '📎';
+  return '🖼️';
 }
 
 export function App() {
@@ -256,7 +264,7 @@ export function App() {
   const [dmMessages, setDmMessages] = useState<DmMessage[]>([]);
   const [dmUsernameInput, setDmUsernameInput] = useState('');
   const [chatMode, setChatMode] = useState<'channel' | 'dm'>('channel');
-  const [pendingImageUploads, setPendingImageUploads] = useState<PendingImageUpload[]>([]);
+  const [pendingAttachmentUploads, setPendingAttachmentUploads] = useState<PendingAttachmentUpload[]>([]);
   const [channelUnreadCounts, setChannelUnreadCounts] = useState<Record<string, number>>({});
   const [dmUnreadCounts, setDmUnreadCounts] = useState<Record<string, number>>({});
   const [desktopNotificationsEnabled, setDesktopNotificationsEnabled] = useState(() =>
@@ -1061,7 +1069,7 @@ export function App() {
       setDmMessages([]);
       setChatMode('channel');
       setAuditLogs([]);
-      setPendingImageUploads([]);
+      setPendingAttachmentUploads([]);
       setChannelUnreadCounts({});
       setDmUnreadCounts({});
       setSearchQuery('');
@@ -1570,7 +1578,7 @@ export function App() {
       return;
     }
 
-    setPendingImageUploads([]);
+    setPendingAttachmentUploads([]);
     setMessages([]);
     setSearchQuery('');
     setSearchResults([]);
@@ -1893,50 +1901,86 @@ export function App() {
         type: 'chat:send',
         payload: {
           text,
-          attachmentIds: pendingImageUploads.map((item) => item.attachmentId),
+          attachmentIds: pendingAttachmentUploads
+            .filter((item) => item.status === 'uploaded' && item.attachmentId)
+            .map((item) => item.attachmentId as string),
         },
       }),
     );
     setDraft('');
-    setPendingImageUploads([]);
+    setPendingAttachmentUploads([]);
     setError(null);
   }
 
-  async function uploadImage(file: File) {
-    if (!activeChannelId) {
-      setError('Select a channel before uploading images.');
+  async function uploadAttachment(file: File) {
+    if (!activeChannelId || !auth) {
+      setError('Select a channel before uploading attachments.');
       return;
     }
 
-    const base64Data = await fileToBase64(file);
+    const localId = crypto.randomUUID();
+    const category = deriveAttachmentCategory(file.type);
+    const previewUrl = file.type.startsWith('image/') ? URL.createObjectURL(file) : null;
 
-    const res = await authedFetch('/uploads/images', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        channelId: activeChannelId,
-        fileName: file.name,
-        mimeType: file.type,
-        fileDataBase64: base64Data,
-      }),
-    });
-
-    if (!res.ok) {
-      setError('Unable to upload image.');
-      return;
-    }
-
-    const data = (await res.json()) as { attachment: { id: string } };
-    setPendingImageUploads((prev) => [
+    setPendingAttachmentUploads((prev) => [
       ...prev,
       {
-        localId: crypto.randomUUID(),
+        localId,
         fileName: file.name,
-        previewUrl: URL.createObjectURL(file),
-        attachmentId: data.attachment.id,
+        mimeType: file.type,
+        category,
+        progress: 0,
+        status: 'uploading',
+        previewUrl,
       },
     ]);
-    setError(null);
+
+    try {
+      const formData = new FormData();
+      formData.set('channelId', activeChannelId);
+      formData.set('file', file);
+
+      const data = await new Promise<{ attachment: { id: string } }>((resolve, reject) => {
+        const request = new XMLHttpRequest();
+        request.open('POST', `${apiBase}/uploads/attachments`);
+        request.setRequestHeader('Authorization', `Bearer ${auth.accessToken}`);
+        request.upload.addEventListener('progress', (event) => {
+          if (!event.lengthComputable) return;
+          const progress = Math.round((event.loaded / event.total) * 100);
+          setPendingAttachmentUploads((prev) =>
+            prev.map((item) => (item.localId === localId ? { ...item, progress } : item)),
+          );
+        });
+        request.addEventListener('load', () => {
+          if (request.status < 200 || request.status >= 300) {
+            reject(new Error('Unable to upload attachment.'));
+            return;
+          }
+
+          try {
+            resolve(JSON.parse(request.responseText) as { attachment: { id: string } });
+          } catch {
+            reject(new Error('Unexpected upload response.'));
+          }
+        });
+        request.addEventListener('error', () => reject(new Error('Upload request failed.')));
+        request.send(formData);
+      });
+
+      setPendingAttachmentUploads((prev) =>
+        prev.map((item) =>
+          item.localId === localId
+            ? { ...item, progress: 100, status: 'uploaded', attachmentId: data.attachment.id }
+            : item,
+        ),
+      );
+      setError(null);
+    } catch {
+      setPendingAttachmentUploads((prev) =>
+        prev.map((item) => (item.localId === localId ? { ...item, status: 'failed' } : item)),
+      );
+      setError('Unable to upload attachment.');
+    }
   }
 
   async function submitAuthForm(event: FormEvent) {
@@ -2667,11 +2711,19 @@ export function App() {
                     {message.attachments.map((attachment) => (
                       <a
                         key={attachment.id}
+                        className={attachment.category === 'image' ? 'attachment-card image' : 'attachment-card file'}
                         href={`${apiBase}${attachment.url}`}
                         target="_blank"
                         rel="noreferrer"
+                        download={attachment.fileName}
                       >
-                        <img src={`${apiBase}${attachment.url}`} alt={attachment.fileName} />
+                        {attachment.category === 'image' ? (
+                          <img src={`${apiBase}${attachment.url}`} alt={attachment.fileName} />
+                        ) : (
+                          <span className="file-attachment-label">
+                            {attachmentIcon(attachment.category)} {attachment.fileName}
+                          </span>
+                        )}
                       </a>
                     ))}
                   </div>
@@ -2771,10 +2823,10 @@ export function App() {
             />
             {chatMode === 'channel' && (
               <label className="upload-button">
-                Image
+                Attach
                 <input
                   type="file"
-                  accept="image/*"
+                  accept="*/*"
                   onChange={(event) => {
                     const file = event.target.files?.[0];
                     event.currentTarget.value = '';
@@ -2782,7 +2834,7 @@ export function App() {
                       return;
                     }
 
-                    void uploadImage(file);
+                    void uploadAttachment(file);
                   }}
                   hidden
                 />
@@ -2792,19 +2844,25 @@ export function App() {
               type="submit"
               disabled={
                 connectionState !== 'open' ||
-                (!draft.trim() && pendingImageUploads.length === 0) ||
+                (!draft.trim() &&
+                  pendingAttachmentUploads.filter((item) => item.status === 'uploaded').length === 0) ||
                 (chatMode === 'dm' ? !activeDmThreadId : !activeChannelId)
               }
             >
               Send
             </button>
           </form>
-          {chatMode === 'channel' && pendingImageUploads.length > 0 && (
+          {chatMode === 'channel' && pendingAttachmentUploads.length > 0 && (
             <div className="attachment-grid pending-uploads">
-              {pendingImageUploads.map((item) => (
+              {pendingAttachmentUploads.map((item) => (
                 <figure key={item.localId}>
-                  <img src={item.previewUrl} alt={item.fileName} />
+                  {item.previewUrl ? (
+                    <img src={item.previewUrl} alt={item.fileName} />
+                  ) : (
+                    <div className="pending-file-icon">{attachmentIcon(item.category)}</div>
+                  )}
                   <figcaption>{item.fileName}</figcaption>
+                  <figcaption>{item.status === 'failed' ? 'failed' : `${item.progress}%`}</figcaption>
                 </figure>
               ))}
             </div>

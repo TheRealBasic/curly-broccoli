@@ -1,4 +1,7 @@
-FROM node:20-alpine AS build
+ARG NODE_IMAGE=public.ecr.aws/docker/library/node:20-alpine
+ARG NGINX_IMAGE=public.ecr.aws/docker/library/nginx:1.27-alpine
+
+FROM ${NODE_IMAGE} AS build
 WORKDIR /app
 RUN corepack enable
 
@@ -13,7 +16,7 @@ ARG VITE_API_BASE_URL=http://localhost:4000
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
 RUN pnpm --filter @curly-broccoli/shared build && pnpm --filter @curly-broccoli/web build
 
-FROM nginx:1.27-alpine AS runtime
+FROM ${NGINX_IMAGE} AS runtime
 COPY apps/web/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/apps/web/dist /usr/share/nginx/html
 EXPOSE 80

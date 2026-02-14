@@ -149,6 +149,7 @@ type AppDependencies = {
     disabledReason: string | null;
     temperature: number | null;
     allowDmInvocation: boolean;
+    invocationPolicy: 'everyone' | 'roles';
   } | null>;
   updateServerAiSettings: (
     serverId: string,
@@ -172,6 +173,7 @@ type AppDependencies = {
       disabledReason?: string | null;
       temperature?: number | null;
       allowDmInvocation?: boolean;
+      invocationPolicy?: 'everyone' | 'roles';
     },
   ) => Promise<{
     serverId: string;
@@ -182,6 +184,7 @@ type AppDependencies = {
     maxTokensPerReply: number | null;
     temperature: number | null;
     allowDmInvocation: boolean;
+    invocationPolicy: 'everyone' | 'roles';
   }>;
   listModerationAuditLogs: (
     serverId: string,
@@ -502,7 +505,7 @@ export function createApp(deps: AppDependencies) {
 
         callback(new Error('Origin not allowed by CORS policy.'));
       },
-      methods: ['GET', 'POST', 'DELETE'],
+      methods: ['GET', 'POST', 'PATCH', 'DELETE'],
       allowedHeaders: ['Authorization', 'Content-Type'],
       maxAge: 600,
     }),
@@ -524,6 +527,20 @@ export function createApp(deps: AppDependencies) {
       res.status(401).json({ error: 'Invalid access token.' });
       return null;
     }
+  }
+
+
+  function buildAiStatus(settings: { enabled: boolean; disabledReason: string | null; model: string }) {
+    const keyMissing = !process.env.OPENAI_API_KEY?.trim();
+    const reason = settings.disabledReason?.toLowerCase() ?? '';
+    const budgetReached = reason.includes('budget');
+    const degradedMode = settings.enabled && settings.model.toLowerCase().includes('mini');
+    return {
+      enabled: settings.enabled,
+      keyMissing,
+      budgetReached,
+      degradedMode,
+    };
   }
 
   function enforceAuthRateLimit(req: express.Request, res: express.Response) {
@@ -1505,7 +1522,7 @@ export function createApp(deps: AppDependencies) {
       return;
     }
 
-    res.json({ settings });
+    res.json({ settings: { ...settings, status: buildAiStatus(settings) } });
   });
 
   app.patch('/servers/:serverId/ai-settings', async (req, res) => {
@@ -1533,6 +1550,7 @@ export function createApp(deps: AppDependencies) {
       disabledReason?: string | null;
       temperature?: number | null;
       allowDmInvocation?: boolean;
+      invocationPolicy?: 'everyone' | 'roles';
     } = {};
 
     if ('enabled' in req.body) {
@@ -1680,9 +1698,17 @@ export function createApp(deps: AppDependencies) {
       patch.allowDmInvocation = req.body.allowDmInvocation;
     }
 
+    if ('invocationPolicy' in req.body) {
+      if (req.body.invocationPolicy !== 'everyone' && req.body.invocationPolicy !== 'roles') {
+        res.status(400).json({ error: "invocationPolicy must be one of: 'everyone', 'roles'." });
+        return;
+      }
+      patch.invocationPolicy = req.body.invocationPolicy;
+    }
+
     try {
       const settings = await deps.updateServerAiSettings(req.params.serverId, auth.userId, patch);
-      res.json({ settings });
+      res.json({ settings: { ...settings, status: buildAiStatus(settings) } });
     } catch (error) {
       const status = resolveMembershipErrorStatus(error);
       if (status === 404) {

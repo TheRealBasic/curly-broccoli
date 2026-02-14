@@ -88,6 +88,7 @@ type ServerAiSettingsRow = {
   disabled_reason: string | null;
   temperature: string | number | null;
   allow_dm_invocation: boolean;
+  ai_invocation_policy: 'everyone' | 'roles';
 };
 
 type ChannelRow = {
@@ -192,6 +193,7 @@ export type ServerAiSettings = {
   disabledReason: string | null;
   temperature: number | null;
   allowDmInvocation: boolean;
+  invocationPolicy: 'everyone' | 'roles';
 };
 
 type UpdateServerAiSettingsPatch = {
@@ -213,6 +215,7 @@ type UpdateServerAiSettingsPatch = {
   disabledReason?: string | null;
   temperature?: number | null;
   allowDmInvocation?: boolean;
+  invocationPolicy?: 'everyone' | 'roles';
 };
 
 export type ServerAiBudgetUsage = {
@@ -779,6 +782,7 @@ function mapServerAiSettingsRow(row: ServerAiSettingsRow): ServerAiSettings {
     disabledReason: row.disabled_reason,
     temperature: row.temperature === null ? null : Number(row.temperature),
     allowDmInvocation: row.allow_dm_invocation,
+    invocationPolicy: row.ai_invocation_policy,
   };
 }
 
@@ -803,7 +807,8 @@ export async function getServerAiSettings(serverId: string) {
              COALESCE(sas.auto_disable_on_budget_exceeded, FALSE) AS auto_disable_on_budget_exceeded,
              sas.disabled_reason,
              sas.temperature,
-             COALESCE(sas.allow_dm_invocation, FALSE) AS allow_dm_invocation
+             COALESCE(sas.allow_dm_invocation, FALSE) AS allow_dm_invocation,
+             COALESCE(sas.ai_invocation_policy, 'everyone') AS ai_invocation_policy
       FROM servers s
       LEFT JOIN server_ai_settings sas ON sas.server_id = s.id
       WHERE s.id = $1;
@@ -931,6 +936,11 @@ export async function updateServerAiSettings(
     values.push(patch.allowDmInvocation);
   }
 
+  if (patch.invocationPolicy !== undefined) {
+    assignments.push(`ai_invocation_policy = $${values.length + 1}`);
+    values.push(patch.invocationPolicy);
+  }
+
   if (assignments.length === 0) {
     const existing = await getServerAiSettings(serverId);
     if (!existing) {
@@ -947,7 +957,8 @@ export async function updateServerAiSettings(
       RETURNING server_id, enabled, bot_display_name, model, system_prompt, max_tokens_per_reply,
         max_prompt_chars, max_completion_tokens, rate_limit_user_requests, rate_limit_server_requests,
         rate_limit_window_seconds, burst_limit_requests, burst_window_seconds, daily_token_budget,
-        monthly_token_budget, auto_disable_on_budget_exceeded, disabled_reason, temperature, allow_dm_invocation;
+        monthly_token_budget, auto_disable_on_budget_exceeded, disabled_reason, temperature, allow_dm_invocation,
+        ai_invocation_policy;
     `,
     values,
   );

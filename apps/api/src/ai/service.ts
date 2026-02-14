@@ -1,3 +1,5 @@
+import type { ChatMessage } from '@curly-broccoli/shared';
+import { assembleChannelAiContext, clampMaxReplyTokens } from './context.js';
 import { requestOpenAi } from './openai.js';
 
 export type ChannelAiRequest = {
@@ -7,7 +9,8 @@ export type ChannelAiRequest = {
   requesterUserId: string;
   requesterUsername: string;
   botDisplayName: string;
-  prompt: string;
+  question: string;
+  recentMessages: ChatMessage[];
   model: string;
   systemPrompt: string | null;
   maxTokensPerReply: number | null;
@@ -15,23 +18,20 @@ export type ChannelAiRequest = {
 };
 
 export async function requestChannelAiReply(input: ChannelAiRequest) {
+  const context = assembleChannelAiContext({
+    botDisplayName: input.botDisplayName,
+    requesterUsername: input.requesterUsername,
+    question: input.question,
+    recentMessages: input.recentMessages,
+    systemPrompt: input.systemPrompt,
+  });
+
   return requestOpenAi({
     provider: 'openai',
     mode: 'responses',
     model: input.model,
-    messages: [
-      {
-        role: 'system',
-        content:
-          input.systemPrompt?.trim() ||
-          `You are ${input.botDisplayName}, a helpful assistant in a team chat channel. Keep replies concise and actionable.`,
-      },
-      {
-        role: 'user',
-        content: input.prompt,
-      },
-    ],
-    maxTokens: input.maxTokensPerReply ?? undefined,
+    messages: context.messages,
+    maxTokens: clampMaxReplyTokens(input.maxTokensPerReply),
     temperature: input.temperature ?? undefined,
     metadata: {
       feature: 'channel_chat_invocation',
@@ -41,6 +41,9 @@ export async function requestChannelAiReply(input: ChannelAiRequest) {
       requesterUserId: input.requesterUserId,
       requesterUsername: input.requesterUsername,
       botDisplayName: input.botDisplayName,
+      contextPolicy: context.policy,
+      contextTruncated: String(context.truncated),
+      estimatedInputTokens: String(context.estimatedInputTokens),
     },
   });
 }

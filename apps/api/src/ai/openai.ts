@@ -276,3 +276,148 @@ export async function requestOpenAi(
     },
   };
 }
+
+type StreamChunkHandler = (chunk: string) => void;
+
+function extractTextFromSsePayload(mode: AiRequestDto['mode'], payload: unknown): string {
+  if (!payload || typeof payload !== 'object') {
+    return '';
+  }
+
+  if (mode === 'chat.completions') {
+    const chunk = payload as {
+      choices?: Array<{ delta?: { content?: string } }>;
+    };
+    return chunk.choices?.[0]?.delta?.content ?? '';
+  }
+
+  const responsesChunk = payload as {
+    type?: string;
+    delta?: string;
+  };
+
+  if (responsesChunk.type === 'response.output_text.delta' && typeof responsesChunk.delta === 'string') {
+    return responsesChunk.delta;
+  }
+
+  return '';
+}
+
+function parseSseEventData(chunk: string): string[] {
+  return chunk
+    .split('\n\n')
+    .map((eventBlock) =>
+      eventBlock
+        .split('\n')
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).trim())
+        .join(''),
+    )
+    .filter((line) => line.length > 0 && line !== '[DONE]');
+}
+
+export async function requestOpenAiWithStreaming(
+  request: AiRequestDto,
+  onChunk: StreamChunkHandler,
+  config = createOpenAiConfig(),
+): Promise<AiResult> {
+  const configError = validateOpenAiConfig(config);
+  if (configError) {
+    return { ok: false, error: configError };
+  }
+
+  const endpoint = `${OPENAI_BASE_URL}${getEndpoint(request.mode)}`;
+  const body = JSON.stringify({
+    ...buildOpenAiRequestBody(request),
+    stream: true,
+  });
+
+  for (let attempt = 0; attempt <= config.maxRetries; attempt += 1) {
+    let streamedOutput = '';
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
+
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: buildHeaders(config),
+        body,
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        clearTimeout(timeout);
+        const payload = await response
+          .json()
+          .catch(() => ({ error: { message: 'Invalid JSON response.' } }));
+        const mappedError = mapOpenAiHttpError(response.status, payload);
+        if (mappedError.retriable && attempt < config.maxRetries) {
+          continue;
+        }
+        return { ok: false, error: mappedError };
+      }
+
+      if (!response.body) {
+        clearTimeout(timeout);
+        return requestOpenAi(request, config);
+      }
+
+      const decoder = new TextDecoder();
+      let sseBuffer = '';
+
+      for await (const part of response.body) {
+        sseBuffer += decoder.decode(part, { stream: true });
+        const boundary = sseBuffer.lastIndexOf('\n\n');
+        if (boundary === -1) {
+          continue;
+        }
+
+        const completeEvents = sseBuffer.slice(0, boundary);
+        sseBuffer = sseBuffer.slice(boundary + 2);
+
+        for (const eventData of parseSseEventData(completeEvents)) {
+          const payload = JSON.parse(eventData) as unknown;
+          const textChunk = extractTextFromSsePayload(request.mode, payload);
+          if (!textChunk) {
+            continue;
+          }
+
+          streamedOutput += textChunk;
+          onChunk(textChunk);
+        }
+      }
+
+      clearTimeout(timeout);
+
+      if (!streamedOutput.trim()) {
+        return requestOpenAi(request, config);
+      }
+
+      return {
+        ok: true,
+        value: {
+          provider: 'openai',
+          model: request.model,
+          outputText: streamedOutput,
+          finishReason: 'completed',
+          usage: {
+            inputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+          },
+          raw: null,
+        },
+      };
+    } catch (error) {
+      clearTimeout(timeout);
+      const mappedError = mapOpenAiError(error);
+      if (mappedError.retriable && attempt < config.maxRetries) {
+        continue;
+      }
+
+      return requestOpenAi(request, config);
+    }
+  }
+
+  return requestOpenAi(request, config);
+}

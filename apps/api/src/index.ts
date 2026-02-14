@@ -1573,22 +1573,57 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
 
         void (async () => {
           try {
-            const aiResult = await requestChannelAiReply({
-              requestId,
-              serverId: server.server_id,
-              channelId: activeChannelId,
-              requesterUserId: currentUser.userId,
-              requesterUsername: currentUser.username,
-              botDisplayName,
-              question: prompt,
-              recentMessages: await fetchRecentMessages(activeChannelId, 20),
-              model: aiSettings.model,
-              systemPrompt: aiSettings.systemPrompt,
-              maxTokensPerReply: aiSettings.maxTokensPerReply,
-              temperature: aiSettings.temperature,
+            let hasStreamedChunks = false;
+
+            broadcastToChannel(activeChannelId, {
+              type: 'ai:reply-start',
+              payload: {
+                channelId: activeChannelId,
+                requestId,
+                requestedByUserId: currentUser.userId,
+                botDisplayName,
+              },
             });
 
+            const aiResult = await requestChannelAiReply(
+              {
+                requestId,
+                serverId: server.server_id,
+                channelId: activeChannelId,
+                requesterUserId: currentUser.userId,
+                requesterUsername: currentUser.username,
+                botDisplayName,
+                question: prompt,
+                recentMessages: await fetchRecentMessages(activeChannelId, 20),
+                model: aiSettings.model,
+                systemPrompt: aiSettings.systemPrompt,
+                maxTokensPerReply: aiSettings.maxTokensPerReply,
+                temperature: aiSettings.temperature,
+              },
+              {
+                onChunk: (chunk) => {
+                  hasStreamedChunks = true;
+                  broadcastToChannel(activeChannelId, {
+                    type: 'ai:reply-chunk',
+                    payload: {
+                      channelId: activeChannelId,
+                      requestId,
+                      chunk,
+                    },
+                  });
+                },
+              },
+            );
+
             if (!aiResult.ok || !aiResult.value.outputText.trim()) {
+              broadcastToChannel(activeChannelId, {
+                type: 'ai:reply-error',
+                payload: {
+                  channelId: activeChannelId,
+                  requestId,
+                  message: aiResult.ok ? 'AI produced an empty reply.' : aiResult.error.message,
+                },
+              });
               return;
             }
 
@@ -1600,6 +1635,26 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
               text: aiResult.value.outputText.trim(),
               createdAt: new Date().toISOString(),
               attachmentIds: [],
+            });
+
+            if (!hasStreamedChunks) {
+              broadcastToChannel(activeChannelId, {
+                type: 'ai:reply-chunk',
+                payload: {
+                  channelId: activeChannelId,
+                  requestId,
+                  chunk: botMessage.text,
+                },
+              });
+            }
+
+            broadcastToChannel(activeChannelId, {
+              type: 'ai:reply-complete',
+              payload: {
+                channelId: activeChannelId,
+                requestId,
+                message: botMessage,
+              },
             });
 
             broadcastToChannel(activeChannelId, {

@@ -41,9 +41,22 @@ type PendingImageUpload = {
   attachmentId: string;
 };
 
+type PeerConnectionHealth = 'connecting' | 'connected' | 'failed' | 'restarting';
+
+type VoiceRuntimeMetrics = {
+  joinAttempts: number;
+  joinSuccesses: number;
+  setupDurationsMs: number[];
+  disconnectCauses: Record<string, number>;
+};
+
 const AUTH_STORAGE_KEY = 'curly_broccoli_auth';
 const DESKTOP_NOTIFICATIONS_STORAGE_KEY = 'curly_broccoli_desktop_notifications_enabled';
 const TYPING_STOP_DELAY_MS = 1200;
+const HEARTBEAT_INTERVAL_MS = 10_000;
+const HEARTBEAT_TIMEOUT_MS = 20_000;
+const RECONNECT_BASE_DELAY_MS = 1_000;
+const RECONNECT_MAX_DELAY_MS = 12_000;
 
 type NotificationPermissionState = 'unsupported' | NotificationPermission;
 
@@ -133,8 +146,31 @@ export function App() {
   const desktopNotificationsEnabledRef = useRef(false);
   const notificationPermissionRef = useRef<NotificationPermissionState>('unsupported');
   const localVoiceStreamRef = useRef<MediaStream | null>(null);
+  const processedLocalVoiceStreamRef = useRef<MediaStream | null>(null);
+  const localAudioContextRef = useRef<AudioContext | null>(null);
+  const localGainNodeRef = useRef<GainNode | null>(null);
   const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const remoteAudioByUserIdRef = useRef<Map<string, HTMLAudioElement>>(new Map());
+  const peerChannelByUserIdRef = useRef<Map<string, string>>(new Map());
+  const heartbeatIntervalRef = useRef<number | null>(null);
+  const heartbeatTimeoutRef = useRef<number | null>(null);
+  const reconnectTimeoutRef = useRef<number | null>(null);
+  const reconnectAttemptRef = useRef(0);
+  const shouldReconnectRef = useRef(false);
+  const currentSocketRef = useRef<WebSocket | null>(null);
+  const peerSetupStartRef = useRef<Map<string, number>>(new Map());
+  const voiceMetricsRef = useRef<VoiceRuntimeMetrics>({
+    joinAttempts: 0,
+    joinSuccesses: 0,
+    setupDurationsMs: [],
+    disconnectCauses: {},
+  });
+  const remoteAudioContextRef = useRef<AudioContext | null>(null);
+  const speakingIntervalRef = useRef<number | null>(null);
+  const localSpeakingAnalyserRef = useRef<AnalyserNode | null>(null);
+  const localSpeakingDataRef = useRef<Uint8Array | null>(null);
+  const remoteSpeakingAnalyserByUserIdRef = useRef<Map<string, AnalyserNode>>(new Map());
+  const remoteSpeakingDataByUserIdRef = useRef<Map<string, Uint8Array>>(new Map());
 
   const [auth, setAuth] = useState<AuthState | null>(() => loadAuthState());
   const [authMode, setAuthMode] = useState<AuthMode>('login');
@@ -158,6 +194,17 @@ export function App() {
     Record<string, VoiceParticipant[]>
   >({});
   const [voiceChannelId, setVoiceChannelId] = useState<string | null>(null);
+  const [inputGain, setInputGain] = useState(100);
+  const [outputVolumeByUserId, setOutputVolumeByUserId] = useState<Record<string, number>>({});
+  const [peerStateByUserId, setPeerStateByUserId] = useState<Record<string, PeerConnectionHealth>>(
+    {},
+  );
+  const [speakingByUserId, setSpeakingByUserId] = useState<Record<string, boolean>>({});
+  const [voiceDashboard, setVoiceDashboard] = useState<{
+    joinSuccessRate: number;
+    medianSetupMs: number;
+    disconnectCauses: Record<string, number>;
+  }>({ joinSuccessRate: 0, medianSetupMs: 0, disconnectCauses: {} });
   const [activeServerId, setActiveServerId] = useState<string | null>(null);
   const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
   const [serverNameInput, setServerNameInput] = useState('');
@@ -233,6 +280,143 @@ export function App() {
     notificationPermissionRef.current = notificationPermission;
   }, [notificationPermission]);
 
+  useEffect(() => {
+    if (!localGainNodeRef.current) {
+      return;
+    }
+
+    localGainNodeRef.current.gain.value = inputGain / 100;
+  }, [inputGain]);
+
+  useEffect(() => {
+    for (const [userId, audio] of remoteAudioByUserIdRef.current.entries()) {
+      audio.volume = (outputVolumeByUserId[userId] ?? 100) / 100;
+    }
+  }, [outputVolumeByUserId]);
+
+  useEffect(() => {
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    if (heartbeatIntervalRef.current) {
+      window.clearInterval(heartbeatIntervalRef.current);
+    }
+    heartbeatIntervalRef.current = window.setInterval(() => {
+      if (socket.readyState !== WebSocket.OPEN) {
+        return;
+      }
+
+      socket.send(JSON.stringify({ type: 'ping', payload: {} }));
+      if (heartbeatTimeoutRef.current) {
+        window.clearTimeout(heartbeatTimeoutRef.current);
+      }
+
+      heartbeatTimeoutRef.current = window.setTimeout(() => {
+        addDisconnectCause('heartbeat_timeout');
+        socket.close();
+      }, HEARTBEAT_TIMEOUT_MS);
+    }, HEARTBEAT_INTERVAL_MS);
+
+    return () => {
+      if (heartbeatIntervalRef.current) {
+        window.clearInterval(heartbeatIntervalRef.current);
+        heartbeatIntervalRef.current = null;
+      }
+      if (heartbeatTimeoutRef.current) {
+        window.clearTimeout(heartbeatTimeoutRef.current);
+        heartbeatTimeoutRef.current = null;
+      }
+    };
+  }, [connectionState]);
+
+  useEffect(() => {
+    const AudioContextCtor =
+      window.AudioContext ||
+      (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextCtor) {
+      return;
+    }
+
+    if (!remoteAudioContextRef.current) {
+      remoteAudioContextRef.current = new AudioContextCtor();
+    }
+
+    if (speakingIntervalRef.current) {
+      window.clearInterval(speakingIntervalRef.current);
+    }
+
+    speakingIntervalRef.current = window.setInterval(() => {
+      const next: Record<string, boolean> = {};
+
+      const localAnalyser = localSpeakingAnalyserRef.current;
+      const localData = localSpeakingDataRef.current;
+      if (localAnalyser && localData && auth?.user.id) {
+        localAnalyser.getByteTimeDomainData(localData);
+        let sum = 0;
+        for (let i = 0; i < localData.length; i += 1) {
+          const centered = localData[i] - 128;
+          sum += centered * centered;
+        }
+        const rms = Math.sqrt(sum / localData.length);
+        next[auth.user.id] = rms > 8;
+      }
+
+      for (const [userId, analyser] of remoteSpeakingAnalyserByUserIdRef.current.entries()) {
+        const data = remoteSpeakingDataByUserIdRef.current.get(userId);
+        if (!data) {
+          continue;
+        }
+        analyser.getByteTimeDomainData(data);
+        let sum = 0;
+        for (let i = 0; i < data.length; i += 1) {
+          const centered = data[i] - 128;
+          sum += centered * centered;
+        }
+        const rms = Math.sqrt(sum / data.length);
+        next[userId] = rms > 8;
+      }
+
+      setSpeakingByUserId(next);
+    }, 220);
+
+    return () => {
+      if (speakingIntervalRef.current) {
+        window.clearInterval(speakingIntervalRef.current);
+        speakingIntervalRef.current = null;
+      }
+    };
+  }, [auth?.user.id]);
+
+  function refreshVoiceDashboard() {
+    const metrics = voiceMetricsRef.current;
+    const joinSuccessRate =
+      metrics.joinAttempts > 0 ? (metrics.joinSuccesses / metrics.joinAttempts) * 100 : 0;
+    const sorted = [...metrics.setupDurationsMs].sort((a, b) => a - b);
+    const medianSetupMs =
+      sorted.length === 0
+        ? 0
+        : sorted.length % 2 === 1
+          ? sorted[(sorted.length - 1) / 2]
+          : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2;
+    setVoiceDashboard({
+      joinSuccessRate,
+      medianSetupMs,
+      disconnectCauses: { ...metrics.disconnectCauses },
+    });
+  }
+
+  function addDisconnectCause(cause: string) {
+    voiceMetricsRef.current.disconnectCauses[cause] =
+      (voiceMetricsRef.current.disconnectCauses[cause] ?? 0) + 1;
+    refreshVoiceDashboard();
+  }
+
+  function updatePeerState(userId: string, state: PeerConnectionHealth) {
+    setPeerStateByUserId((prev) => ({ ...prev, [userId]: state }));
+  }
+
   function disposeAudioForUser(userId: string) {
     const audio = remoteAudioByUserIdRef.current.get(userId);
     if (audio) {
@@ -240,6 +424,16 @@ export function App() {
       audio.srcObject = null;
       remoteAudioByUserIdRef.current.delete(userId);
     }
+    remoteSpeakingAnalyserByUserIdRef.current.delete(userId);
+    remoteSpeakingDataByUserIdRef.current.delete(userId);
+    setSpeakingByUserId((prev) => {
+      if (!(userId in prev)) {
+        return prev;
+      }
+      const next = { ...prev };
+      delete next[userId];
+      return next;
+    });
   }
 
   function closePeerConnection(userId: string) {
@@ -247,9 +441,20 @@ export function App() {
     if (peerConnection) {
       peerConnection.ontrack = null;
       peerConnection.onicecandidate = null;
+      peerConnection.onconnectionstatechange = null;
       peerConnection.close();
       peerConnectionsRef.current.delete(userId);
     }
+    peerChannelByUserIdRef.current.delete(userId);
+    peerSetupStartRef.current.delete(userId);
+    setPeerStateByUserId((prev) => {
+      if (!(userId in prev)) {
+        return prev;
+      }
+      const next = { ...prev };
+      delete next[userId];
+      return next;
+    });
 
     disposeAudioForUser(userId);
   }
@@ -266,14 +471,28 @@ export function App() {
       }
       localVoiceStreamRef.current = null;
     }
+
+    const processedLocalStream = processedLocalVoiceStreamRef.current;
+    if (processedLocalStream) {
+      for (const track of processedLocalStream.getTracks()) {
+        track.stop();
+      }
+      processedLocalVoiceStreamRef.current = null;
+    }
+
+    localGainNodeRef.current = null;
+    localSpeakingAnalyserRef.current = null;
+    localSpeakingDataRef.current = null;
+    void localAudioContextRef.current?.close();
+    localAudioContextRef.current = null;
   }
 
   async function ensureLocalVoiceStream() {
-    if (localVoiceStreamRef.current) {
-      return localVoiceStreamRef.current;
+    if (processedLocalVoiceStreamRef.current) {
+      return processedLocalVoiceStreamRef.current;
     }
 
-    const stream = await navigator.mediaDevices.getUserMedia({
+    const rawStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         noiseSuppression: true,
         echoCancellation: true,
@@ -281,8 +500,65 @@ export function App() {
       },
       video: false,
     });
-    localVoiceStreamRef.current = stream;
-    return stream;
+
+    localVoiceStreamRef.current = rawStream;
+    const AudioContextCtor =
+      window.AudioContext ||
+      (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextCtor) {
+      processedLocalVoiceStreamRef.current = rawStream;
+      return rawStream;
+    }
+
+    const context = new AudioContextCtor();
+    localAudioContextRef.current = context;
+    const source = context.createMediaStreamSource(rawStream);
+    const gainNode = context.createGain();
+    gainNode.gain.value = inputGain / 100;
+    const analyser = context.createAnalyser();
+    analyser.fftSize = 512;
+    source.connect(gainNode);
+    gainNode.connect(analyser);
+
+    const destination = context.createMediaStreamDestination();
+    gainNode.connect(destination);
+
+    localGainNodeRef.current = gainNode;
+    localSpeakingAnalyserRef.current = analyser;
+    localSpeakingDataRef.current = new Uint8Array(analyser.fftSize);
+    processedLocalVoiceStreamRef.current = destination.stream;
+
+    return destination.stream;
+  }
+
+  function handlePeerConnectionFailure(targetUserId: string, channelId: string) {
+    const peerConnection = peerConnectionsRef.current.get(targetUserId);
+    const socket = socketRef.current;
+    if (!peerConnection || !socket || socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    updatePeerState(targetUserId, 'restarting');
+    void peerConnection.restartIce();
+    void peerConnection
+      .createOffer({ iceRestart: true })
+      .then(async (offer) => {
+        await peerConnection.setLocalDescription(offer);
+        socket.send(
+          JSON.stringify({
+            type: 'voice:signal',
+            payload: {
+              channelId,
+              targetUserId,
+              description: offer,
+              iceRestart: true,
+            },
+          }),
+        );
+      })
+      .catch(() => {
+        updatePeerState(targetUserId, 'failed');
+      });
   }
 
   async function createPeerConnection(
@@ -303,6 +579,9 @@ export function App() {
     const peerConnection = new RTCPeerConnection({
       iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
     });
+    updatePeerState(targetUserId, 'connecting');
+    peerChannelByUserIdRef.current.set(targetUserId, channelId);
+    peerSetupStartRef.current.set(targetUserId, Date.now());
 
     for (const track of stream.getTracks()) {
       peerConnection.addTrack(track, stream);
@@ -322,6 +601,17 @@ export function App() {
       }
 
       audio.srcObject = remoteStream;
+      audio.volume = (outputVolumeByUserId[targetUserId] ?? 100) / 100;
+
+      if (remoteAudioContextRef.current) {
+        const source = remoteAudioContextRef.current.createMediaStreamSource(remoteStream);
+        const analyser = remoteAudioContextRef.current.createAnalyser();
+        analyser.fftSize = 512;
+        source.connect(analyser);
+        remoteSpeakingAnalyserByUserIdRef.current.set(targetUserId, analyser);
+        remoteSpeakingDataByUserIdRef.current.set(targetUserId, new Uint8Array(analyser.fftSize));
+      }
+
       void audio.play().catch(() => {
         setError('Click anywhere on the page once to allow voice playback.');
       });
@@ -344,6 +634,23 @@ export function App() {
       );
     };
 
+    peerConnection.onconnectionstatechange = () => {
+      if (peerConnection.connectionState === 'connected') {
+        updatePeerState(targetUserId, 'connected');
+        const startedAt = peerSetupStartRef.current.get(targetUserId);
+        if (startedAt) {
+          voiceMetricsRef.current.setupDurationsMs.push(Date.now() - startedAt);
+          peerSetupStartRef.current.delete(targetUserId);
+          refreshVoiceDashboard();
+        }
+      }
+
+      if (peerConnection.connectionState === 'failed') {
+        updatePeerState(targetUserId, 'failed');
+        handlePeerConnectionFailure(targetUserId, channelId);
+      }
+    };
+
     peerConnectionsRef.current.set(targetUserId, peerConnection);
 
     if (createOffer) {
@@ -356,6 +663,7 @@ export function App() {
             channelId,
             targetUserId,
             description: offer,
+            iceRestart: false,
           },
         }),
       );
@@ -525,28 +833,42 @@ export function App() {
     if (!wsUrl || !auth) {
       return;
     }
+    shouldReconnectRef.current = true;
 
-    const socket = new WebSocket(wsUrl);
-    socketRef.current = socket;
-    setConnectionState('connecting');
+    const connectSocket = () => {
+      const socket = new WebSocket(wsUrl);
+      socketRef.current = socket;
+      currentSocketRef.current = socket;
+      setConnectionState('connecting');
 
-    socket.addEventListener('open', () => {
-      setConnectionState('open');
-      setError(null);
-      if (activeServerId) {
-        socket.send(
-          JSON.stringify({ type: 'presence:join-server', payload: { serverId: activeServerId } }),
-        );
-      }
-    });
+      socket.addEventListener('open', () => {
+        reconnectAttemptRef.current = 0;
+        setConnectionState('open');
+        setError(null);
+        console.info('[ws] connected');
+        if (activeServerId) {
+          socket.send(
+            JSON.stringify({ type: 'presence:join-server', payload: { serverId: activeServerId } }),
+          );
+        }
+      });
 
-    socket.addEventListener('message', (event) => {
+      socket.addEventListener('message', (event) => {
       let parsed: ServerEvent;
 
       try {
         parsed = JSON.parse(String(event.data)) as ServerEvent;
       } catch {
         setError('Received an invalid event from server.');
+        console.error('[ws] invalid_event_json');
+        return;
+      }
+
+      if (parsed.type === 'pong') {
+        if (heartbeatTimeoutRef.current) {
+          window.clearTimeout(heartbeatTimeoutRef.current);
+          heartbeatTimeoutRef.current = null;
+        }
         return;
       }
 
@@ -698,6 +1020,8 @@ export function App() {
       }
 
       if (parsed.type === 'voice:participants') {
+        voiceMetricsRef.current.joinSuccesses += 1;
+        refreshVoiceDashboard();
         setVoiceParticipantsByChannel((prev) => ({
           ...prev,
           [parsed.payload.channelId]: parsed.payload.participants,
@@ -756,6 +1080,7 @@ export function App() {
                     channelId,
                     targetUserId: fromUserId,
                     description: answer,
+                    iceRestart: false,
                   },
                 }),
               );
@@ -766,30 +1091,62 @@ export function App() {
             await peerConnection.addIceCandidate(candidate);
           }
         })().catch(() => {
+          addDisconnectCause('signal_failure');
           setError('Voice signaling failed. Try rejoining voice.');
+          console.error('[voice] signal_failure');
         });
       }
 
       if (parsed.type === 'error') {
         setError(parsed.payload.message);
+        console.error('[ws] server_error', parsed.payload.message);
       }
-    });
+      });
 
-    socket.addEventListener('close', () => {
-      stopAllVoice();
-      setVoiceChannelId(null);
-      setConnectionState('closed');
-      setError('Disconnected from chat server.');
-    });
+      socket.addEventListener('close', () => {
+        if (socket !== currentSocketRef.current) {
+          return;
+        }
+
+        stopAllVoice();
+        setVoiceChannelId(null);
+        setConnectionState('closed');
+        setError('Disconnected from chat server.');
+        addDisconnectCause('socket_close');
+        console.warn('[ws] disconnected');
+
+        if (shouldReconnectRef.current) {
+          const attempt = reconnectAttemptRef.current + 1;
+          reconnectAttemptRef.current = attempt;
+          const delay = Math.min(RECONNECT_MAX_DELAY_MS, RECONNECT_BASE_DELAY_MS * 2 ** (attempt - 1));
+          reconnectTimeoutRef.current = window.setTimeout(connectSocket, delay);
+        }
+      });
+
+      socket.addEventListener('error', () => {
+        console.error('[ws] transport_error');
+      });
+    };
+
+    connectSocket();
 
     return () => {
+      shouldReconnectRef.current = false;
+      if (reconnectTimeoutRef.current) {
+        window.clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
       sendTypingStop();
-      socket.send(JSON.stringify({ type: 'voice:leave-channel', payload: {} }));
+      const socket = socketRef.current;
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: 'voice:leave-channel', payload: {} }));
+      }
       stopAllVoice();
-      socket.close();
+      currentSocketRef.current?.close();
       socketRef.current = null;
+      currentSocketRef.current = null;
     };
-  }, [wsUrl, auth?.user.id]);
+  }, [wsUrl, auth?.user.id, activeServerId]);
 
   useEffect(() => {
     if (!voiceChannelId || !activeChannelId || voiceChannelId === activeChannelId) {
@@ -803,6 +1160,7 @@ export function App() {
 
     stopAllVoice();
     setVoiceChannelId(null);
+    console.info('[voice] leave_local');
   }, [activeChannelId, voiceChannelId]);
 
   useEffect(() => {
@@ -958,13 +1316,17 @@ export function App() {
     }
 
     try {
+      voiceMetricsRef.current.joinAttempts += 1;
+      refreshVoiceDashboard();
       await ensureLocalVoiceStream();
       socket.send(
         JSON.stringify({ type: 'voice:join-channel', payload: { channelId: activeChannelId } }),
       );
       setVoiceChannelId(activeChannelId);
       setError(null);
+      console.info('[voice] join_attempt', { channelId: activeChannelId });
     } catch {
+      addDisconnectCause('microphone_permission');
       setError('Microphone access is required for voice chat.');
     }
   }
@@ -977,6 +1339,7 @@ export function App() {
 
     stopAllVoice();
     setVoiceChannelId(null);
+    console.info('[voice] leave_local');
   }
 
   function sendMessage() {
@@ -1458,18 +1821,57 @@ export function App() {
               </button>
             )}
           </section>
+          <div className="voice-controls">
+            <label>
+              Mic gain {inputGain}%
+              <input
+                type="range"
+                min={0}
+                max={200}
+                value={inputGain}
+                onChange={(event) => setInputGain(Number(event.target.value))}
+              />
+            </label>
+            <div className="subtle">
+              Join success: {voiceDashboard.joinSuccessRate.toFixed(0)}% · Median setup:{' '}
+              {voiceDashboard.medianSetupMs.toFixed(0)}ms
+            </div>
+          </div>
           <div className="voice-participants">
             {voiceParticipants
               .filter((participant) => participant.userId !== auth.user.id)
               .map((participant) => (
                 <span key={participant.userId} className="voice-chip">
                   {participant.username}
+                  <strong className="voice-state">{peerStateByUserId[participant.userId] ?? 'connecting'}</strong>
+                  {speakingByUserId[participant.userId] && <span className="speaking-dot" aria-label="speaking" />}
+                  <label className="voice-volume">
+                    Vol
+                    <input
+                      type="range"
+                      min={0}
+                      max={150}
+                      value={outputVolumeByUserId[participant.userId] ?? 100}
+                      onChange={(event) =>
+                        setOutputVolumeByUserId((prev) => ({
+                          ...prev,
+                          [participant.userId]: Number(event.target.value),
+                        }))
+                      }
+                    />
+                  </label>
                 </span>
               ))}
             {voiceChannelId === activeChannelId && voiceParticipants.length <= 1 && (
               <span className="subtle">No other participants yet.</span>
             )}
           </div>
+          <p className="subtle">
+            Disconnect causes:{' '}
+            {Object.entries(voiceDashboard.disconnectCauses)
+              .map(([cause, count]) => `${cause}: ${count}`)
+              .join(', ') || 'none'}
+          </p>
           <form
             className="inline-form search-bar"
             onSubmit={(event) => {

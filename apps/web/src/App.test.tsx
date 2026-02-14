@@ -84,6 +84,7 @@ describe('App', () => {
                 username: 'alice',
                 role: 'owner',
                 canShareScreen: true,
+                isMuted: false,
               },
             ],
           }),
@@ -164,7 +165,7 @@ describe('App', () => {
       if (url.includes('/servers/server-1/members')) {
         return new Response(
           JSON.stringify({
-            members: [{ userId: 'user-1', username: 'alice', role: 'owner', canShareScreen: true }],
+            members: [{ userId: 'user-1', username: 'alice', role: 'owner', canShareScreen: true, isMuted: false }],
           }),
           { status: 200 },
         );
@@ -228,4 +229,104 @@ describe('App', () => {
     expect(await screen.findByText('hello edited')).toBeInTheDocument();
     expect(screen.getByText('(edited)')).toBeInTheDocument();
   });
+
+  it('shows unmute and permission toggle for owners and sends moderation requests', async () => {
+    localStorage.setItem(
+      'curly_broccoli_auth',
+      JSON.stringify({
+        user: { id: 'owner-1', username: 'alice' },
+        accessToken: 'token-1',
+        refreshToken: 'refresh-1',
+      }),
+    );
+
+    const fetchMock = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/servers')) {
+        return new Response(
+          JSON.stringify({ servers: [{ id: 'server-1', name: 'Main', ownerId: 'owner-1' }] }),
+          { status: 200 },
+        );
+      }
+      if (url.includes('/servers/server-1/channels')) {
+        return new Response(
+          JSON.stringify({ channels: [{ id: 'channel-1', serverId: 'server-1', name: 'general' }] }),
+          { status: 200 },
+        );
+      }
+      if (url.includes('/servers/server-1/members') && !url.includes('/permissions')) {
+        return new Response(
+          JSON.stringify({
+            members: [
+              {
+                userId: 'owner-1',
+                username: 'alice',
+                role: 'owner',
+                canShareScreen: true,
+                isMuted: false,
+              },
+              {
+                userId: 'member-1',
+                username: 'bob',
+                role: 'member',
+                canShareScreen: false,
+                isMuted: true,
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.includes('/servers/server-1/audit-logs')) {
+        return new Response(JSON.stringify({ logs: [] }), { status: 200 });
+      }
+      if (url.endsWith('/dm/threads')) {
+        return new Response(JSON.stringify({ threads: [] }), { status: 200 });
+      }
+      if (url.endsWith('/servers/server-1/mutes/member-1') && init?.method === 'DELETE') {
+        return new Response(null, { status: 204 });
+      }
+      if (url.endsWith('/servers/server-1/members/member-1/permissions') && init?.method === 'PATCH') {
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+
+      return new Response(JSON.stringify({}), { status: 404 });
+    });
+
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('#general')).toBeInTheDocument();
+    });
+
+    const unmuteButton = await screen.findByRole('button', { name: 'Unmute' });
+    await act(async () => {
+      unmuteButton.click();
+    });
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('/servers/server-1/mutes/member-1'),
+        expect.objectContaining({ method: 'DELETE' }),
+      );
+    });
+
+    const permissionCheckboxes = screen.getAllByRole('checkbox');
+    const memberPermission = permissionCheckboxes.find((checkbox) => !(checkbox as HTMLInputElement).checked);
+    expect(memberPermission).toBeTruthy();
+
+    await act(async () => {
+      (memberPermission as HTMLInputElement).click();
+    });
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('/servers/server-1/members/member-1/permissions'),
+        expect.objectContaining({ method: 'PATCH' }),
+      );
+    });
+  });
+
 });

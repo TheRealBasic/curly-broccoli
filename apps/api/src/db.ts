@@ -76,6 +76,7 @@ type ServerMembershipRow = {
   username: string;
   role: 'owner' | 'member';
   can_share_screen: boolean;
+  is_muted: boolean;
 };
 
 type DmThreadRow = {
@@ -436,9 +437,10 @@ export async function listServerMembers(serverId: string, userId: string) {
 
   const result = await pool.query<ServerMembershipRow>(
     `
-      SELECT sm.user_id, u.username, sm.role, sm.can_share_screen
+      SELECT sm.user_id, u.username, sm.role, sm.can_share_screen, (m.user_id IS NOT NULL) AS is_muted
       FROM server_memberships sm
       INNER JOIN users u ON u.id = sm.user_id
+      LEFT JOIN server_mutes m ON m.server_id = sm.server_id AND m.user_id = sm.user_id
       WHERE sm.server_id = $1
       ORDER BY
         CASE WHEN sm.role = 'owner' THEN 0 ELSE 1 END ASC,
@@ -454,6 +456,7 @@ export async function listServerMembers(serverId: string, userId: string) {
         username: row.username,
         role: row.role,
         canShareScreen: row.can_share_screen,
+        isMuted: row.is_muted,
       }) satisfies ServerMember,
   );
 }
@@ -783,6 +786,17 @@ export async function reportMessageById(messageId: string, actorUserId: string) 
   return result.rows[0] ?? null;
 }
 
+
+
+export class MembershipError extends Error {
+  code: 'ACTOR_NOT_MEMBER' | 'ACTOR_NOT_OWNER' | 'TARGET_NOT_MEMBER';
+
+  constructor(code: 'ACTOR_NOT_MEMBER' | 'ACTOR_NOT_OWNER' | 'TARGET_NOT_MEMBER', message: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
 export async function muteUserInServer(
   serverId: string,
   targetUserId: string,
@@ -790,13 +804,17 @@ export async function muteUserInServer(
   reason: string | null,
 ) {
   const actorRole = await getMembershipRole(serverId, actorUserId);
+  if (!actorRole) {
+    throw new MembershipError('ACTOR_NOT_MEMBER', 'Actor is not a member of this server');
+  }
+
   if (actorRole !== 'owner') {
-    throw new Error('Only owners can mute users');
+    throw new MembershipError('ACTOR_NOT_OWNER', 'Only owners can mute users');
   }
 
   const targetMembership = await isMemberOfServer(serverId, targetUserId);
   if (!targetMembership) {
-    throw new Error('Target user is not a member of this server');
+    throw new MembershipError('TARGET_NOT_MEMBER', 'Target user is not a member of this server');
   }
 
   await pool.query(
@@ -808,6 +826,62 @@ export async function muteUserInServer(
     `,
     [serverId, targetUserId, actorUserId, reason],
   );
+}
+
+
+
+export async function unmuteUserInServer(serverId: string, targetUserId: string, actorUserId: string) {
+  const actorRole = await getMembershipRole(serverId, actorUserId);
+  if (!actorRole) {
+    throw new MembershipError('ACTOR_NOT_MEMBER', 'Actor is not a member of this server');
+  }
+
+  if (actorRole !== 'owner') {
+    throw new MembershipError('ACTOR_NOT_OWNER', 'Only owners can unmute users');
+  }
+
+  const targetMembership = await isMemberOfServer(serverId, targetUserId);
+  if (!targetMembership) {
+    throw new MembershipError('TARGET_NOT_MEMBER', 'Target user is not a member of this server');
+  }
+
+  await pool.query(
+    `
+      DELETE FROM server_mutes
+      WHERE server_id = $1 AND user_id = $2;
+    `,
+    [serverId, targetUserId],
+  );
+}
+
+export async function updateMemberScreenSharePermission(
+  serverId: string,
+  targetUserId: string,
+  canShare: boolean,
+  actorUserId: string,
+) {
+  const actorRole = await getMembershipRole(serverId, actorUserId);
+  if (!actorRole) {
+    throw new MembershipError('ACTOR_NOT_MEMBER', 'Actor is not a member of this server');
+  }
+
+  if (actorRole !== 'owner') {
+    throw new MembershipError('ACTOR_NOT_OWNER', 'Only owners can update member permissions');
+  }
+
+  const updated = await pool.query<{ user_id: string }>(
+    `
+      UPDATE server_memberships
+      SET can_share_screen = $3
+      WHERE server_id = $1 AND user_id = $2
+      RETURNING user_id;
+    `,
+    [serverId, targetUserId, canShare],
+  );
+
+  if (!updated.rowCount) {
+    throw new MembershipError('TARGET_NOT_MEMBER', 'Target user is not a member of this server');
+  }
 }
 
 export async function isMutedInServer(serverId: string, userId: string) {
@@ -833,6 +907,8 @@ export async function writeModerationAuditLog(entry: {
     | 'message_delete'
     | 'message_report'
     | 'user_mute'
+    | 'user_unmute'
+    | 'member_permission_update'
     | 'screen_share_start'
     | 'screen_share_stop'
     | 'screen_share_force_stop'
@@ -875,6 +951,8 @@ export async function listModerationAuditLogs(serverId: string, userId: string, 
       | 'message_delete'
       | 'message_report'
       | 'user_mute'
+      | 'user_unmute'
+      | 'member_permission_update'
       | 'screen_share_start'
       | 'screen_share_stop'
       | 'screen_share_force_stop'

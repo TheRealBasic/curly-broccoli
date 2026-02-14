@@ -34,6 +34,8 @@ type ModerationAuditLog = {
     | 'message_delete'
     | 'message_report'
     | 'user_mute'
+    | 'user_unmute'
+    | 'member_permission_update'
     | 'screen_share_start'
     | 'screen_share_stop'
     | 'screen_share_force_stop';
@@ -2141,7 +2143,44 @@ export function App() {
       return;
     }
 
-    await loadAuditLogs(activeServerId);
+    await Promise.all([loadAuditLogs(activeServerId), loadMembers(activeServerId)]);
+    setError(null);
+  }
+
+
+  async function unmuteMember(userId: string) {
+    if (!activeServerId) {
+      return;
+    }
+
+    const res = await authedFetch(`/servers/${activeServerId}/mutes/${userId}`, { method: 'DELETE' });
+
+    if (!res.ok) {
+      setError('Unable to unmute member.');
+      return;
+    }
+
+    await Promise.all([loadAuditLogs(activeServerId), loadMembers(activeServerId)]);
+    setError(null);
+  }
+
+  async function updateMemberPermission(userId: string, canShareScreen: boolean) {
+    if (!activeServerId) {
+      return;
+    }
+
+    const res = await authedFetch(`/servers/${activeServerId}/members/${userId}/permissions`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ canShareScreen }),
+    });
+
+    if (!res.ok) {
+      setError('Unable to update member permissions.');
+      return;
+    }
+
+    await Promise.all([loadAuditLogs(activeServerId), loadMembers(activeServerId)]);
     setError(null);
   }
 
@@ -2766,9 +2805,27 @@ export function App() {
                   <small className="subtle">{member.role}</small>
                   {!member.canShareScreen && <small className="subtle">no-share</small>}
                   {isServerOwner && member.userId !== auth.user.id && (
-                    <button type="button" onClick={() => muteMember(member.userId)}>
-                      Mute
-                    </button>
+                    <>
+                      {member.isMuted ? (
+                        <button type="button" onClick={() => unmuteMember(member.userId)}>
+                          Unmute
+                        </button>
+                      ) : (
+                        <button type="button" onClick={() => muteMember(member.userId)}>
+                          Mute
+                        </button>
+                      )}
+                      <label className="subtle">
+                        <input
+                          type="checkbox"
+                          checked={member.canShareScreen}
+                          onChange={(event) =>
+                            void updateMemberPermission(member.userId, event.target.checked)
+                          }
+                        />
+                        can-share
+                      </label>
+                    </>
                   )}
                 </div>
               );

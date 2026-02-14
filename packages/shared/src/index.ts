@@ -60,6 +60,9 @@ export type VoiceParticipant = {
 
 export type StreamType = 'audio' | 'screen';
 
+export const SCREEN_SHARE_ROLLOUT_STAGES = ['disabled', 'internal', 'beta', 'full'] as const;
+export type ScreenShareRolloutStage = (typeof SCREEN_SHARE_ROLLOUT_STAGES)[number];
+
 export type ClientEvent =
   | {
       type: 'chat:join-channel';
@@ -291,3 +294,51 @@ export type ServerEvent =
         targetUserId?: string;
       };
     };
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+export function isStreamType(value: unknown): value is StreamType {
+  return value === 'audio' || value === 'screen';
+}
+
+export function parseScreenShareRolloutStage(raw: string | undefined): ScreenShareRolloutStage {
+  if (raw === 'internal' || raw === 'beta' || raw === 'full' || raw === 'disabled') {
+    return raw;
+  }
+
+  return 'full';
+}
+
+export function isValidClientEvent(value: unknown): value is ClientEvent {
+  if (!isObject(value) || typeof value.type !== 'string') {
+    return false;
+  }
+
+  const payload = isObject(value.payload) ? value.payload : {};
+  if (value.type === 'screen:share-start' || value.type === 'screen:share-stop') {
+    return typeof payload.channelId === 'string' && payload.channelId.trim().length > 0;
+  }
+
+  if (value.type === 'screen:force-stop') {
+    return (
+      typeof payload.channelId === 'string' &&
+      payload.channelId.trim().length > 0 &&
+      typeof payload.presenterUserId === 'string' &&
+      payload.presenterUserId.trim().length > 0
+    );
+  }
+
+  if (value.type === 'screen:signal') {
+    return (
+      typeof payload.channelId === 'string' &&
+      payload.channelId.trim().length > 0 &&
+      typeof payload.targetUserId === 'string' &&
+      payload.targetUserId.trim().length > 0 &&
+      isStreamType(payload.streamType)
+    );
+  }
+
+  return true;
+}

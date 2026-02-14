@@ -1050,6 +1050,36 @@ export function App() {
     }
   }
 
+  async function loadUnreadSummary() {
+    const res = await authedFetch('/unread/summary');
+    if (!res.ok) {
+      throw new Error('Unable to load unread summary.');
+    }
+
+    const data = (await res.json()) as {
+      summary: {
+        channels: Record<string, number>;
+        dmThreads: Record<string, number>;
+      };
+    };
+    setChannelUnreadCounts(data.summary.channels);
+    setDmUnreadCounts(data.summary.dmThreads);
+  }
+
+  async function markActiveChannelRead(channelId: string) {
+    const res = await authedFetch(`/channels/${channelId}/read`, { method: 'POST' });
+    if (!res.ok) {
+      throw new Error('Unable to update channel read marker.');
+    }
+  }
+
+  async function markActiveDmThreadRead(threadId: string) {
+    const res = await authedFetch(`/dm/threads/${threadId}/read`, { method: 'POST' });
+    if (!res.ok) {
+      throw new Error('Unable to update DM read marker.');
+    }
+  }
+
   useEffect(() => {
     if (!auth) {
       setConnectionState('closed');
@@ -1080,7 +1110,7 @@ export function App() {
       return;
     }
 
-    void Promise.all([loadServers(), loadDmThreads()]).catch((reason: unknown) => {
+    void Promise.all([loadServers(), loadDmThreads(), loadUnreadSummary()]).catch((reason: unknown) => {
       setError(reason instanceof Error ? reason.message : 'Unable to load servers.');
     });
   }, [auth]);
@@ -1298,6 +1328,11 @@ export function App() {
               });
             }
           }
+        }
+
+        if (parsed.type === 'notification:unread-updated') {
+          setChannelUnreadCounts(parsed.payload.summary.channels);
+          setDmUnreadCounts(parsed.payload.summary.dmThreads);
         }
 
         if (parsed.type === 'system') {
@@ -1571,6 +1606,9 @@ export function App() {
   useEffect(() => {
     if (activeChannelId) {
       setChannelUnreadCounts((prev) => ({ ...prev, [activeChannelId]: 0 }));
+      void markActiveChannelRead(activeChannelId).catch(() => {
+        // best-effort read marker update
+      });
     }
 
     const socket = socketRef.current;
@@ -1607,6 +1645,9 @@ export function App() {
   useEffect(() => {
     if (activeDmThreadId) {
       setDmUnreadCounts((prev) => ({ ...prev, [activeDmThreadId]: 0 }));
+      void markActiveDmThreadRead(activeDmThreadId).catch(() => {
+        // best-effort read marker update
+      });
     }
 
     const socket = socketRef.current;

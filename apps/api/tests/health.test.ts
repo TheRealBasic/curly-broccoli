@@ -51,6 +51,12 @@ const baseDeps = {
     sizeBytes: 10,
     url: '/uploads/upload.bin',
   }),
+  markChannelAsRead: vi.fn().mockResolvedValue(undefined),
+  markDmThreadAsRead: vi.fn().mockResolvedValue(undefined),
+  getUnreadSummary: vi
+    .fn<() => Promise<{ channels: Record<string, number>; dmThreads: Record<string, number>; totalChannels: number; totalDmThreads: number }>>()
+    .mockResolvedValue({ channels: {}, dmThreads: {}, totalChannels: 0, totalDmThreads: 0 }),
+  notifyUnreadUpdated: vi.fn(),
   deleteMessageById: vi.fn(),
   updateMessageById: vi.fn(),
   reportMessageById: vi.fn(),
@@ -527,5 +533,66 @@ describe('Cursor pagination boundaries', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ messages: [], nextCursor: null, prevCursor: null });
+  });
+});
+
+
+describe('Unread marker APIs', () => {
+  it('returns unread summary for authenticated user', async () => {
+    const { createApp } = await import('../src/app.js');
+    const getUnreadSummary = vi.fn().mockResolvedValue({
+      channels: { 'channel-1': 2 },
+      dmThreads: { 'thread-1': 1 },
+      totalChannels: 2,
+      totalDmThreads: 1,
+    });
+    const app = createApp({ ...baseDeps, getUnreadSummary });
+
+    const token = createAccessToken({ id: 'user-1', username: 'alice' });
+    const res = await request(app).get('/unread/summary').set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.summary.channels['channel-1']).toBe(2);
+    expect(getUnreadSummary).toHaveBeenCalledWith('user-1');
+  });
+
+  it('marks channel as read and emits unread update', async () => {
+    const { createApp } = await import('../src/app.js');
+    const markChannelAsRead = vi.fn().mockResolvedValue(undefined);
+    const getUnreadSummary = vi.fn().mockResolvedValue({
+      channels: { 'channel-1': 0 },
+      dmThreads: {},
+      totalChannels: 0,
+      totalDmThreads: 0,
+    });
+    const notifyUnreadUpdated = vi.fn();
+    const app = createApp({ ...baseDeps, markChannelAsRead, getUnreadSummary, notifyUnreadUpdated });
+
+    const token = createAccessToken({ id: 'user-1', username: 'alice' });
+    const res = await request(app)
+      .post('/channels/channel-1/read')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ lastReadMessageId: 'message-1' });
+
+    expect(res.status).toBe(204);
+    expect(markChannelAsRead).toHaveBeenCalledWith('user-1', 'channel-1', 'message-1');
+    expect(notifyUnreadUpdated).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-1' }),
+    );
+  });
+
+  it('marks dm thread as read', async () => {
+    const { createApp } = await import('../src/app.js');
+    const markDmThreadAsRead = vi.fn().mockResolvedValue(undefined);
+    const app = createApp({ ...baseDeps, markDmThreadAsRead });
+
+    const token = createAccessToken({ id: 'user-1', username: 'alice' });
+    const res = await request(app)
+      .post('/dm/threads/thread-1/read')
+      .set('Authorization', `Bearer ${token}`)
+      .send({});
+
+    expect(res.status).toBe(204);
+    expect(markDmThreadAsRead).toHaveBeenCalledWith('user-1', 'thread-1', undefined);
   });
 });

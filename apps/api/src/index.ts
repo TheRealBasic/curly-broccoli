@@ -34,6 +34,7 @@ import {
   findUserById,
   findUserByUsername,
   getServerIdForChannel,
+  getUnreadSummary,
   isMemberOfServer,
   isMutedInServer,
   listChannelsForServer,
@@ -46,6 +47,8 @@ import {
   unmuteUserInServer,
   updateMemberScreenSharePermission,
   reportMessageById,
+  markChannelAsRead,
+  markDmThreadAsRead,
   revokeRefreshToken,
   runMigrations,
   saveDmMessage,
@@ -96,6 +99,15 @@ const app = createApp({
     broadcastToChannel(channelId, {
       type: 'chat:message-edited',
       payload: { channelId, messageId, text, editedAt },
+    });
+  },
+  markChannelAsRead,
+  markDmThreadAsRead,
+  getUnreadSummary,
+  notifyUnreadUpdated: ({ userId, summary }) => {
+    sendToUserConnections(userId, {
+      type: 'notification:unread-updated',
+      payload: { summary },
     });
   },
 });

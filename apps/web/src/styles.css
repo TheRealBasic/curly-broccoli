@@ -238,3 +238,18 @@ h1 {
 .presence-dot.offline {
   background: #9ca3af;
 }
+
+.message-actions {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.35rem;
+}
+
+.message-actions button,
+.member-row button {
+  border: 1px solid #d1d5db;
+  background: #f9fafb;
+  border-radius: 0.35rem;
+  padding: 0.2rem 0.45rem;
+  cursor: pointer;
+}

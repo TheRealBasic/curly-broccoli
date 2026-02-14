@@ -3,6 +3,7 @@ export const APP_NAME = 'Curly Broccoli Chat';
 export type ChatMessage = {
   id: string;
   channelId: string;
+  userId?: string | null;
   user: string;
   text: string;
   createdAt: string;

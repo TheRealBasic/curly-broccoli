@@ -29,6 +29,7 @@ const pool = new Pool({
 type ChatMessageRow = {
   id: string;
   channel_id: string;
+  user_id: string | null;
   user_name: string;
   text: string;
   created_at: Date | string;
@@ -66,7 +67,6 @@ type ServerMembershipRow = {
   role: 'owner' | 'member';
 };
 
-
 type DmThreadRow = {
   id: string;
   user_a_id: string;
@@ -89,12 +89,12 @@ function mapRow(row: ChatMessageRow): ChatMessage {
   return {
     id: row.id,
     channelId: row.channel_id,
+    userId: row.user_id,
     user: row.user_name,
     text: row.text,
     createdAt: new Date(row.created_at).toISOString(),
   };
 }
-
 
 function mapDmThreadRow(row: DmThreadRow): DmThreadSummary {
   return {
@@ -375,6 +375,19 @@ export async function listServerMembers(serverId: string, userId: string) {
   );
 }
 
+export async function getServerIdForChannel(channelId: string) {
+  const result = await pool.query<{ server_id: string }>(
+    `
+      SELECT server_id
+      FROM channels
+      WHERE id = $1;
+    `,
+    [channelId],
+  );
+
+  return result.rows[0] ?? null;
+}
+
 export async function canAccessChannel(channelId: string, userId: string) {
   const result = await pool.query<{ found: number }>(
     `
@@ -407,11 +420,18 @@ export async function addMemberByUsername(serverId: string, username: string, ac
 export async function saveMessage(message: ChatMessage) {
   const inserted = await pool.query<ChatMessageRow>(
     `
-      INSERT INTO chat_messages (id, channel_id, user_name, text, created_at)
-      VALUES ($1, $2, $3, $4, $5)
-      RETURNING id, channel_id, user_name, text, created_at;
+      INSERT INTO chat_messages (id, channel_id, user_id, user_name, text, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING id, channel_id, user_id, user_name, text, created_at;
     `,
-    [message.id, message.channelId, message.user, message.text, message.createdAt],
+    [
+      message.id,
+      message.channelId,
+      message.userId ?? null,
+      message.user,
+      message.text,
+      message.createdAt,
+    ],
   );
 
   return mapRow(inserted.rows[0]);
@@ -421,7 +441,7 @@ export async function fetchRecentMessages(channelId: string, limit = chatHistory
   const safeLimit = Math.max(1, Math.min(limit, 500));
   const rows = await pool.query<ChatMessageRow>(
     `
-      SELECT id, channel_id, user_name, text, created_at
+      SELECT id, channel_id, user_id, user_name, text, created_at
       FROM chat_messages
       WHERE channel_id = $1
       ORDER BY created_at DESC
@@ -433,10 +453,212 @@ export async function fetchRecentMessages(channelId: string, limit = chatHistory
   return rows.rows.reverse().map(mapRow);
 }
 
+export async function deleteMessageById(messageId: string, actorUserId: string) {
+  const deleted = await pool.query<{
+    id: string;
+    channel_id: string;
+    server_id: string;
+    user_id: string | null;
+    user_name: string;
+    text: string;
+    created_at: Date | string;
+    can_delete: boolean;
+  }>(
+    `
+      WITH target AS (
+        SELECT
+          m.id,
+          m.channel_id,
+          c.server_id,
+          m.user_id,
+          m.user_name,
+          m.text,
+          m.created_at,
+          EXISTS (
+            SELECT 1
+            FROM server_memberships sm
+            WHERE sm.server_id = c.server_id
+              AND sm.user_id = $2
+              AND sm.role = 'owner'
+          ) OR m.user_id = $2 AS can_delete
+        FROM chat_messages m
+        INNER JOIN channels c ON c.id = m.channel_id
+        WHERE m.id = $1
+      ),
+      removed AS (
+        DELETE FROM chat_messages
+        WHERE id = $1 AND EXISTS (SELECT 1 FROM target WHERE can_delete)
+        RETURNING id
+      )
+      SELECT
+        target.id,
+        target.channel_id,
+        target.server_id,
+        target.user_id,
+        target.user_name,
+        target.text,
+        target.created_at,
+        target.can_delete
+      FROM target
+      INNER JOIN removed ON removed.id = target.id;
+    `,
+    [messageId, actorUserId],
+  );
+
+  return deleted.rows[0] ?? null;
+}
+
+export async function reportMessageById(messageId: string, actorUserId: string) {
+  const result = await pool.query<{
+    id: string;
+    channel_id: string;
+    server_id: string;
+    user_id: string | null;
+    user_name: string;
+    text: string;
+    created_at: Date | string;
+  }>(
+    `
+      SELECT m.id, m.channel_id, c.server_id, m.user_id, m.user_name, m.text, m.created_at
+      FROM chat_messages m
+      INNER JOIN channels c ON c.id = m.channel_id
+      WHERE m.id = $1
+        AND EXISTS (
+          SELECT 1
+          FROM server_memberships sm
+          WHERE sm.server_id = c.server_id AND sm.user_id = $2
+        );
+    `,
+    [messageId, actorUserId],
+  );
+
+  return result.rows[0] ?? null;
+}
+
+export async function muteUserInServer(
+  serverId: string,
+  targetUserId: string,
+  actorUserId: string,
+  reason: string | null,
+) {
+  const actorRole = await getMembershipRole(serverId, actorUserId);
+  if (actorRole !== 'owner') {
+    throw new Error('Only owners can mute users');
+  }
+
+  const targetMembership = await isMemberOfServer(serverId, targetUserId);
+  if (!targetMembership) {
+    throw new Error('Target user is not a member of this server');
+  }
+
+  await pool.query(
+    `
+      INSERT INTO server_mutes (server_id, user_id, muted_by_user_id, reason)
+      VALUES ($1, $2, $3, $4)
+      ON CONFLICT (server_id, user_id)
+      DO UPDATE SET muted_by_user_id = EXCLUDED.muted_by_user_id, reason = EXCLUDED.reason, created_at = NOW();
+    `,
+    [serverId, targetUserId, actorUserId, reason],
+  );
+}
+
+export async function isMutedInServer(serverId: string, userId: string) {
+  const result = await pool.query<{ found: number }>(
+    `
+      SELECT 1 AS found
+      FROM server_mutes
+      WHERE server_id = $1 AND user_id = $2;
+    `,
+    [serverId, userId],
+  );
+
+  return Boolean(result.rowCount);
+}
+
+export async function writeModerationAuditLog(entry: {
+  id: string;
+  serverId: string;
+  actorUserId: string;
+  targetUserId?: string | null;
+  messageId?: string | null;
+  action: 'message_delete' | 'message_report' | 'user_mute';
+  details?: unknown;
+}) {
+  await pool.query(
+    `
+      INSERT INTO moderation_audit_logs (id, server_id, actor_user_id, target_user_id, message_id, action, details)
+      VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb);
+    `,
+    [
+      entry.id,
+      entry.serverId,
+      entry.actorUserId,
+      entry.targetUserId ?? null,
+      entry.messageId ?? null,
+      entry.action,
+      JSON.stringify(entry.details ?? {}),
+    ],
+  );
+}
+
+export async function listModerationAuditLogs(serverId: string, userId: string, limit = 50) {
+  const role = await getMembershipRole(serverId, userId);
+  if (role !== 'owner') {
+    throw new Error('Only owners can view moderation logs');
+  }
+
+  const safeLimit = Math.max(1, Math.min(limit, 200));
+  const result = await pool.query<{
+    id: string;
+    server_id: string;
+    actor_user_id: string;
+    actor_username: string;
+    target_user_id: string | null;
+    target_username: string | null;
+    message_id: string | null;
+    action: 'message_delete' | 'message_report' | 'user_mute';
+    details: unknown;
+    created_at: Date | string;
+  }>(
+    `
+      SELECT
+        l.id,
+        l.server_id,
+        l.actor_user_id,
+        actor.username AS actor_username,
+        l.target_user_id,
+        target.username AS target_username,
+        l.message_id,
+        l.action,
+        l.details,
+        l.created_at
+      FROM moderation_audit_logs l
+      INNER JOIN users actor ON actor.id = l.actor_user_id
+      LEFT JOIN users target ON target.id = l.target_user_id
+      WHERE l.server_id = $1
+      ORDER BY l.created_at DESC
+      LIMIT $2;
+    `,
+    [serverId, safeLimit],
+  );
+
+  return result.rows.map((row) => ({
+    id: row.id,
+    serverId: row.server_id,
+    actorUserId: row.actor_user_id,
+    actorUsername: row.actor_username,
+    targetUserId: row.target_user_id,
+    targetUsername: row.target_username,
+    messageId: row.message_id,
+    action: row.action,
+    details: row.details,
+    createdAt: new Date(row.created_at).toISOString(),
+  }));
+}
+
 export async function closeDb() {
   await pool.end();
 }
-
 
 export async function createOrGetDmThread(userAId: string, userBId: string) {
   if (userAId === userBId) {

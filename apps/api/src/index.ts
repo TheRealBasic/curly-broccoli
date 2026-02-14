@@ -13,28 +13,35 @@ import { verifyAccessToken } from './auth.js';
 import {
   addMemberByUsername,
   addServerMembership,
-  chatHistoryLimit,
   canAccessChannel,
   canAccessDmThread,
+  chatHistoryLimit,
   createChannel,
   createOrGetDmThread,
   createServer,
   createUser,
+  deleteMessageById,
   fetchRecentDmMessages,
   fetchRecentMessages,
   findRefreshToken,
   findUserById,
   findUserByUsername,
+  getServerIdForChannel,
   isMemberOfServer,
+  isMutedInServer,
   listChannelsForServer,
-  listServerMembers,
   listDmThreadsForUser,
+  listModerationAuditLogs,
+  listServerMembers,
   listServersForUser,
+  muteUserInServer,
+  reportMessageById,
   revokeRefreshToken,
   runMigrations,
   saveDmMessage,
   saveMessage,
   storeRefreshToken,
+  writeModerationAuditLog,
 } from './db.js';
 
 dotenv.config();
@@ -43,6 +50,11 @@ const WEBSOCKET_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const port = Number(process.env.API_PORT ?? 4000);
 const app = createApp({
   fetchRecentMessages,
+  deleteMessageById,
+  reportMessageById,
+  muteUserInServer,
+  listModerationAuditLogs,
+  writeModerationAuditLog,
   findUserByUsername,
   findUserById,
   createUser,
@@ -161,7 +173,6 @@ function broadcastToChannel(channelId: string, event: ServerEvent) {
     }
   }
 }
-
 
 function broadcastToDmThread(threadId: string, event: ServerEvent) {
   const frame = encodeFrame(JSON.stringify(event));
@@ -348,7 +359,6 @@ async function handleJoinChannel(socket: net.Socket, channelId: string) {
     });
   }
 }
-
 
 async function handleJoinDmThread(socket: net.Socket, threadId: string) {
   const authUser = userByConnection.get(socket);
@@ -602,10 +612,29 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
   }
 
   const currentUser = userByConnection.get(socket);
+
+  if (!currentUser) {
+    sendEvent(socket, { type: 'error', payload: { message: 'Unauthorized connection.' } });
+    return;
+  }
+
+  const server = await getServerIdForChannel(activeChannelId);
+  if (!server) {
+    sendEvent(socket, { type: 'error', payload: { message: 'Channel not found.' } });
+    return;
+  }
+
+  const muted = await isMutedInServer(server.server_id, currentUser.userId);
+  if (muted) {
+    sendEvent(socket, { type: 'error', payload: { message: 'You are muted in this server.' } });
+    return;
+  }
+
   const messageToSave: ChatMessage = {
     id: randomUUID(),
     channelId: activeChannelId,
-    user: currentUser?.username ?? 'Anonymous',
+    userId: currentUser.userId,
+    user: currentUser.username,
     text,
     createdAt: new Date().toISOString(),
   };

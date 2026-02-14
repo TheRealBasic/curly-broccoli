@@ -6,11 +6,19 @@ import { type ChatMessage, type ClientEvent, type ServerEvent } from '@curly-bro
 import { createApp } from './app.js';
 import { verifyAccessToken } from './auth.js';
 import {
+  addMemberByUsername,
+  addServerMembership,
   chatHistoryLimit,
+  canAccessChannel,
+  createChannel,
+  createServer,
   createUser,
   fetchRecentMessages,
   findRefreshToken,
+  findUserById,
   findUserByUsername,
+  listChannelsForServer,
+  listServersForUser,
   revokeRefreshToken,
   runMigrations,
   saveMessage,
@@ -24,17 +32,25 @@ const port = Number(process.env.API_PORT ?? 4000);
 const app = createApp({
   fetchRecentMessages,
   findUserByUsername,
+  findUserById,
   createUser,
   storeRefreshToken,
   findRefreshToken,
-  revokeRefreshToken
+  revokeRefreshToken,
+  listServersForUser,
+  createServer,
+  addServerMembership,
+  listChannelsForServer,
+  createChannel,
+  addMemberByUsername
 });
 const server = http.createServer(app);
 
 const RATE_LIMIT_WINDOW_MS = 4_000;
 const RATE_LIMIT_MAX_MESSAGES = 6;
 const clients = new Set<net.Socket>();
-const userByConnection = new Map<net.Socket, string>();
+const userByConnection = new Map<net.Socket, { userId: string; username: string }>();
+const activeChannelByConnection = new Map<net.Socket, string>();
 const sentTimestampsByConnection = new Map<net.Socket, number[]>();
 const readBufferByConnection = new Map<net.Socket, Buffer>();
 
@@ -111,10 +127,12 @@ function sendEvent(socket: net.Socket, event: ServerEvent) {
   socket.write(encodeFrame(JSON.stringify(event)));
 }
 
-function broadcast(event: ServerEvent) {
+function broadcastToChannel(channelId: string, event: ServerEvent) {
   const frame = encodeFrame(JSON.stringify(event));
   for (const client of clients) {
-    client.write(frame);
+    if (activeChannelByConnection.get(client) === channelId) {
+      client.write(frame);
+    }
   }
 }
 
@@ -136,8 +154,36 @@ function isRateLimited(socket: net.Socket) {
 function closeConnection(socket: net.Socket) {
   clients.delete(socket);
   userByConnection.delete(socket);
+  activeChannelByConnection.delete(socket);
   sentTimestampsByConnection.delete(socket);
   readBufferByConnection.delete(socket);
+}
+
+async function handleJoinChannel(socket: net.Socket, channelId: string) {
+  const authUser = userByConnection.get(socket);
+  if (!authUser) {
+    sendEvent(socket, { type: 'error', payload: { message: 'Unauthorized connection.' } });
+    return;
+  }
+
+  const allowed = await canAccessChannel(channelId, authUser.userId);
+  if (!allowed) {
+    sendEvent(socket, { type: 'error', payload: { message: 'You cannot join this channel.' } });
+    return;
+  }
+
+  activeChannelByConnection.set(socket, channelId);
+  sendEvent(socket, { type: 'chat:joined-channel', payload: { channelId } });
+
+  try {
+    const messages = await fetchRecentMessages(channelId, chatHistoryLimit);
+    sendEvent(socket, { type: 'chat:history', payload: { channelId, messages } });
+  } catch {
+    sendEvent(socket, {
+      type: 'error',
+      payload: { message: 'Unable to load message history.' }
+    });
+  }
 }
 
 async function handleClientEvent(socket: net.Socket, raw: string) {
@@ -155,6 +201,17 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
 
   if (event.type === 'ping') {
     sendEvent(socket, { type: 'pong', payload: {} });
+    return;
+  }
+
+  if (event.type === 'chat:join-channel') {
+    const channelId = event.payload?.channelId?.trim();
+    if (!channelId) {
+      sendEvent(socket, { type: 'error', payload: { message: 'channelId is required.' } });
+      return;
+    }
+
+    await handleJoinChannel(socket, channelId);
     return;
   }
 
@@ -183,16 +240,27 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
     return;
   }
 
+  const activeChannelId = activeChannelByConnection.get(socket);
+  if (!activeChannelId) {
+    sendEvent(socket, {
+      type: 'error',
+      payload: { message: 'Join a channel before sending messages.' }
+    });
+    return;
+  }
+
+  const currentUser = userByConnection.get(socket);
   const messageToSave: ChatMessage = {
     id: randomUUID(),
-    user: userByConnection.get(socket) ?? 'Anonymous',
+    channelId: activeChannelId,
+    user: currentUser?.username ?? 'Anonymous',
     text,
     createdAt: new Date().toISOString()
   };
 
   try {
     const message = await saveMessage(messageToSave);
-    broadcast({
+    broadcastToChannel(activeChannelId, {
       type: 'chat:message',
       payload: { message }
     });
@@ -241,21 +309,11 @@ server.on('upgrade', (req, socket) => {
   );
 
   clients.add(socket);
-  userByConnection.set(socket, authUser.username);
+  userByConnection.set(socket, authUser);
   sentTimestampsByConnection.set(socket, []);
   readBufferByConnection.set(socket, Buffer.alloc(0));
 
   sendEvent(socket, { type: 'system', payload: { text: `Connected as ${authUser.username}` } });
-  void fetchRecentMessages(chatHistoryLimit)
-    .then((messages) => {
-      sendEvent(socket, { type: 'chat:history', payload: { messages } });
-    })
-    .catch(() => {
-      sendEvent(socket, {
-        type: 'error',
-        payload: { message: 'Unable to load message history.' }
-      });
-    });
 
   socket.on('data', (chunk) => {
     const current = Buffer.concat([readBufferByConnection.get(socket) ?? Buffer.alloc(0), chunk]);

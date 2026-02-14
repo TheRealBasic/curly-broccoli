@@ -2,7 +2,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Pool } from 'pg';
-import type { ChatMessage } from '@curly-broccoli/shared';
+import type { ChannelSummary, ChatMessage, ServerSummary } from '@curly-broccoli/shared';
 
 const DEFAULT_HISTORY_LIMIT = 50;
 
@@ -20,6 +20,7 @@ const pool = new Pool({
 
 type ChatMessageRow = {
   id: string;
+  channel_id: string;
   user_name: string;
   text: string;
   created_at: Date | string;
@@ -39,9 +40,22 @@ type RefreshTokenRow = {
   revoked_at: Date | string | null;
 };
 
+type ServerRow = {
+  id: string;
+  name: string;
+  owner_id: string;
+};
+
+type ChannelRow = {
+  id: string;
+  server_id: string;
+  name: string;
+};
+
 function mapRow(row: ChatMessageRow): ChatMessage {
   return {
     id: row.id,
+    channelId: row.channel_id,
     user: row.user_name,
     text: row.text,
     createdAt: new Date(row.created_at).toISOString()
@@ -113,6 +127,19 @@ export async function findUserByUsername(username: string) {
   return result.rows[0] ?? null;
 }
 
+export async function findUserById(userId: string) {
+  const result = await pool.query<UserRow>(
+    `
+      SELECT id, username, password_hash
+      FROM users
+      WHERE id = $1;
+    `,
+    [userId]
+  );
+
+  return result.rows[0] ?? null;
+}
+
 export async function storeRefreshToken(id: string, userId: string, tokenHash: string, expiresAt: string) {
   await pool.query(
     `
@@ -147,29 +174,168 @@ export async function revokeRefreshToken(tokenHash: string) {
   );
 }
 
+export async function createServer(id: string, name: string, ownerId: string) {
+  const inserted = await pool.query<ServerRow>(
+    `
+      INSERT INTO servers (id, name, owner_id)
+      VALUES ($1, $2, $3)
+      RETURNING id, name, owner_id;
+    `,
+    [id, name, ownerId]
+  );
+
+  const server = inserted.rows[0];
+  return { id: server.id, name: server.name, ownerId: server.owner_id } satisfies ServerSummary;
+}
+
+export async function addServerMembership(serverId: string, userId: string, role: 'owner' | 'member') {
+  await pool.query(
+    `
+      INSERT INTO server_memberships (server_id, user_id, role)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (server_id, user_id) DO UPDATE SET role = EXCLUDED.role;
+    `,
+    [serverId, userId, role]
+  );
+}
+
+export async function listServersForUser(userId: string) {
+  const result = await pool.query<ServerRow>(
+    `
+      SELECT s.id, s.name, s.owner_id
+      FROM servers s
+      INNER JOIN server_memberships sm ON sm.server_id = s.id
+      WHERE sm.user_id = $1
+      ORDER BY s.created_at ASC;
+    `,
+    [userId]
+  );
+
+  return result.rows.map(
+    (row) => ({ id: row.id, name: row.name, ownerId: row.owner_id }) satisfies ServerSummary
+  );
+}
+
+export async function listChannelsForServer(serverId: string, userId: string) {
+  const result = await pool.query<ChannelRow>(
+    `
+      SELECT c.id, c.server_id, c.name
+      FROM channels c
+      WHERE c.server_id = $1
+        AND EXISTS (
+          SELECT 1 FROM server_memberships sm
+          WHERE sm.server_id = c.server_id AND sm.user_id = $2
+        )
+      ORDER BY c.created_at ASC;
+    `,
+    [serverId, userId]
+  );
+
+  return result.rows.map(
+    (row) => ({ id: row.id, serverId: row.server_id, name: row.name }) satisfies ChannelSummary
+  );
+}
+
+
+export async function getMembershipRole(serverId: string, userId: string) {
+  const result = await pool.query<{ role: 'owner' | 'member' }>(
+    `
+      SELECT role
+      FROM server_memberships
+      WHERE server_id = $1 AND user_id = $2;
+    `,
+    [serverId, userId]
+  );
+
+  return result.rows[0]?.role ?? null;
+}
+
+export async function isMemberOfServer(serverId: string, userId: string) {
+  const result = await pool.query<{ found: number }>(
+    `
+      SELECT 1 AS found
+      FROM server_memberships
+      WHERE server_id = $1 AND user_id = $2;
+    `,
+    [serverId, userId]
+  );
+
+  return Boolean(result.rowCount);
+}
+
+export async function createChannel(id: string, serverId: string, name: string, userId: string) {
+  const member = await isMemberOfServer(serverId, userId);
+  if (!member) {
+    throw new Error('Not a member of server');
+  }
+
+  const inserted = await pool.query<ChannelRow>(
+    `
+      INSERT INTO channels (id, server_id, name)
+      VALUES ($1, $2, $3)
+      RETURNING id, server_id, name;
+    `,
+    [id, serverId, name]
+  );
+
+  const channel = inserted.rows[0];
+  return { id: channel.id, serverId: channel.server_id, name: channel.name } satisfies ChannelSummary;
+}
+
+
+export async function canAccessChannel(channelId: string, userId: string) {
+  const result = await pool.query<{ found: number }>(
+    `
+      SELECT 1 AS found
+      FROM channels c
+      INNER JOIN server_memberships sm ON sm.server_id = c.server_id
+      WHERE c.id = $1 AND sm.user_id = $2;
+    `,
+    [channelId, userId]
+  );
+
+  return Boolean(result.rowCount);
+}
+
+export async function addMemberByUsername(serverId: string, username: string, actorUserId: string) {
+  const actorRole = await getMembershipRole(serverId, actorUserId);
+  if (actorRole !== 'owner') {
+    throw new Error('Only owners can add members');
+  }
+
+  const user = await findUserByUsername(username);
+  if (!user) {
+    return null;
+  }
+
+  await addServerMembership(serverId, user.id, 'member');
+  return { userId: user.id, username: user.username };
+}
+
 export async function saveMessage(message: ChatMessage) {
   const inserted = await pool.query<ChatMessageRow>(
     `
-      INSERT INTO chat_messages (id, user_name, text, created_at)
-      VALUES ($1, $2, $3, $4)
-      RETURNING id, user_name, text, created_at;
+      INSERT INTO chat_messages (id, channel_id, user_name, text, created_at)
+      VALUES ($1, $2, $3, $4, $5)
+      RETURNING id, channel_id, user_name, text, created_at;
     `,
-    [message.id, message.user, message.text, message.createdAt]
+    [message.id, message.channelId, message.user, message.text, message.createdAt]
   );
 
   return mapRow(inserted.rows[0]);
 }
 
-export async function fetchRecentMessages(limit = chatHistoryLimit) {
+export async function fetchRecentMessages(channelId: string, limit = chatHistoryLimit) {
   const safeLimit = Math.max(1, Math.min(limit, 500));
   const rows = await pool.query<ChatMessageRow>(
     `
-      SELECT id, user_name, text, created_at
+      SELECT id, channel_id, user_name, text, created_at
       FROM chat_messages
+      WHERE channel_id = $1
       ORDER BY created_at DESC
-      LIMIT $1;
+      LIMIT $2;
     `,
-    [safeLimit]
+    [channelId, safeLimit]
   );
 
   return rows.rows.reverse().map(mapRow);

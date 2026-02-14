@@ -10,7 +10,7 @@ body {
 }
 
 .chat-layout {
-  max-width: 720px;
+  max-width: 1100px;
   margin: 1.5rem auto;
   padding: 0 1rem;
 }
@@ -44,8 +44,54 @@ h1 {
   cursor: pointer;
 }
 
-.chat-box {
+.guild-shell {
   margin-top: 1rem;
+  display: grid;
+  grid-template-columns: 220px 220px minmax(0, 1fr);
+  gap: 0.75rem;
+}
+
+.sidebar,
+.chat-panel {
+  border: 1px solid #d1d5db;
+  border-radius: 0.5rem;
+  background: #fff;
+  padding: 0.65rem;
+}
+
+.sidebar h3 {
+  margin: 0 0 0.5rem;
+}
+
+.list {
+  display: grid;
+  gap: 0.35rem;
+  max-height: 300px;
+  overflow: auto;
+  margin-bottom: 0.6rem;
+}
+
+.list-item {
+  border: 1px solid #e5e7eb;
+  background: #f9fafb;
+  border-radius: 0.4rem;
+  padding: 0.35rem 0.45rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.list-item.active {
+  background: #dbeafe;
+  border-color: #93c5fd;
+}
+
+.inline-form {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+
+.chat-box {
   border: 1px solid #d1d5db;
   border-radius: 0.5rem;
   background: #fff;
@@ -88,17 +134,19 @@ h1 {
 }
 
 .composer input,
-.auth-form input {
+.auth-form input,
+.inline-form input {
   flex: 1;
   border-radius: 0.4rem;
   border: 1px solid #d1d5db;
   padding: 0.55rem 0.7rem;
-  font-size: 1rem;
+  font-size: 0.95rem;
 }
 
 .composer button,
 .auth-form button,
-.auth-toggle button {
+.auth-toggle button,
+.inline-form button {
   border: none;
   border-radius: 0.4rem;
   padding: 0.55rem 1rem;
@@ -107,7 +155,8 @@ h1 {
   cursor: pointer;
 }
 
-.composer button:disabled {
+.composer button:disabled,
+.inline-form button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }

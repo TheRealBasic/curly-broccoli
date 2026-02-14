@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
-import { APP_NAME, type ChatMessage, type ServerEvent } from '@curly-broccoli/shared';
+import { APP_NAME, type ChannelSummary, type ChatMessage, type ServerEvent, type ServerSummary } from '@curly-broccoli/shared';
 
 type ConnectionState = 'connecting' | 'open' | 'closed';
 
@@ -50,6 +50,14 @@ export function App() {
   const [systemMessage, setSystemMessage] = useState('Sign in to join chat.');
   const [error, setError] = useState<string | null>(null);
 
+  const [servers, setServers] = useState<ServerSummary[]>([]);
+  const [channels, setChannels] = useState<ChannelSummary[]>([]);
+  const [activeServerId, setActiveServerId] = useState<string | null>(null);
+  const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
+  const [serverNameInput, setServerNameInput] = useState('');
+  const [channelNameInput, setChannelNameInput] = useState('');
+  const [inviteUsernameInput, setInviteUsernameInput] = useState('');
+
   const wsUrl = useMemo(() => {
     if (!auth?.accessToken) {
       return null;
@@ -64,63 +72,70 @@ export function App() {
     saveAuthState(next);
   }
 
-  async function refreshAuth(current: AuthState) {
-    const res = await fetch(`${apiBase}/auth/refresh`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refreshToken: current.refreshToken })
-    });
-
-    if (!res.ok) {
-      throw new Error('Session expired. Please sign in again.');
+  async function authedFetch(path: string, init?: RequestInit) {
+    if (!auth) {
+      throw new Error('Not authenticated.');
     }
 
-    const data = (await res.json()) as {
-      user: { id: string; username: string };
-      tokens: { accessToken: string; refreshToken: string };
-    };
+    const headers = new Headers(init?.headers ?? {});
+    headers.set('Authorization', `Bearer ${auth.accessToken}`);
+    return fetch(`${apiBase}${path}`, { ...init, headers });
+  }
 
-    const nextAuth: AuthState = {
-      user: data.user,
-      accessToken: data.tokens.accessToken,
-      refreshToken: data.tokens.refreshToken
-    };
+  async function loadServers() {
+    const res = await authedFetch('/servers');
+    if (!res.ok) {
+      throw new Error('Unable to load servers.');
+    }
 
-    updateAuth(nextAuth);
-    return nextAuth;
+    const data = (await res.json()) as { servers: ServerSummary[] };
+    setServers(data.servers);
+    if (!activeServerId && data.servers.length > 0) {
+      setActiveServerId(data.servers[0].id);
+    }
+  }
+
+  async function loadChannels(serverId: string) {
+    const res = await authedFetch(`/servers/${serverId}/channels`);
+    if (!res.ok) {
+      throw new Error('Unable to load channels.');
+    }
+
+    const data = (await res.json()) as { channels: ChannelSummary[] };
+    setChannels(data.channels);
+    if (!data.channels.some((channel) => channel.id === activeChannelId)) {
+      setActiveChannelId(data.channels[0]?.id ?? null);
+    }
   }
 
   useEffect(() => {
     if (!auth) {
       setConnectionState('closed');
       setMessages([]);
+      setServers([]);
+      setChannels([]);
+      setActiveServerId(null);
+      setActiveChannelId(null);
       setSystemMessage('Sign in to join chat.');
       return;
     }
 
-    let cancelled = false;
+    void loadServers().catch((reason: unknown) => {
+      setError(reason instanceof Error ? reason.message : 'Unable to load servers.');
+    });
+  }, [auth]);
 
-    void (async () => {
-      try {
-        const meRes = await fetch(`${apiBase}/auth/me`, {
-          headers: { Authorization: `Bearer ${auth.accessToken}` }
-        });
+  useEffect(() => {
+    if (!auth || !activeServerId) {
+      setChannels([]);
+      setActiveChannelId(null);
+      return;
+    }
 
-        if (meRes.status === 401) {
-          await refreshAuth(auth);
-        }
-      } catch {
-        if (!cancelled) {
-          updateAuth(null);
-          setError('Session expired. Please sign in again.');
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [apiBase, auth]);
+    void loadChannels(activeServerId).catch((reason: unknown) => {
+      setError(reason instanceof Error ? reason.message : 'Unable to load channels.');
+    });
+  }, [auth?.user.id, activeServerId]);
 
   useEffect(() => {
     if (!wsUrl || !auth) {
@@ -147,11 +162,15 @@ export function App() {
       }
 
       if (parsed.type === 'chat:history') {
-        setMessages(parsed.payload.messages);
+        if (parsed.payload.channelId === activeChannelId) {
+          setMessages(parsed.payload.messages);
+        }
       }
 
       if (parsed.type === 'chat:message') {
-        setMessages((prev) => [...prev, parsed.payload.message]);
+        if (parsed.payload.message.channelId === activeChannelId) {
+          setMessages((prev) => [...prev, parsed.payload.message]);
+        }
       }
 
       if (parsed.type === 'system') {
@@ -174,10 +193,25 @@ export function App() {
     };
   }, [wsUrl, auth?.user.id]);
 
+  useEffect(() => {
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN || !activeChannelId) {
+      return;
+    }
+
+    setMessages([]);
+    socket.send(
+      JSON.stringify({
+        type: 'chat:join-channel',
+        payload: { channelId: activeChannelId }
+      })
+    );
+  }, [activeChannelId, connectionState]);
+
   function sendMessage() {
     const socket = socketRef.current;
     const text = draft.trim();
-    if (!socket || socket.readyState !== WebSocket.OPEN || !text) {
+    if (!socket || socket.readyState !== WebSocket.OPEN || !text || !activeChannelId) {
       return;
     }
 
@@ -221,6 +255,72 @@ export function App() {
 
     setUsernameInput('');
     setPasswordInput('');
+    setError(null);
+  }
+
+  async function createServer(event: FormEvent) {
+    event.preventDefault();
+    const name = serverNameInput.trim();
+    if (!name) {
+      return;
+    }
+
+    const res = await authedFetch('/servers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name })
+    });
+
+    if (!res.ok) {
+      setError('Unable to create server.');
+      return;
+    }
+
+    setServerNameInput('');
+    await loadServers();
+  }
+
+  async function createChannel(event: FormEvent) {
+    event.preventDefault();
+    const name = channelNameInput.trim();
+    if (!name || !activeServerId) {
+      return;
+    }
+
+    const res = await authedFetch(`/servers/${activeServerId}/channels`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name })
+    });
+
+    if (!res.ok) {
+      setError('Unable to create channel.');
+      return;
+    }
+
+    setChannelNameInput('');
+    await loadChannels(activeServerId);
+  }
+
+  async function addMember(event: FormEvent) {
+    event.preventDefault();
+    const username = inviteUsernameInput.trim().toLowerCase();
+    if (!username || !activeServerId) {
+      return;
+    }
+
+    const res = await authedFetch(`/servers/${activeServerId}/members`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username })
+    });
+
+    if (!res.ok) {
+      setError('Unable to add member (owner-only action).');
+      return;
+    }
+
+    setInviteUsernameInput('');
     setError(null);
   }
 
@@ -291,7 +391,7 @@ export function App() {
   }
 
   return (
-    <main className="chat-layout">
+    <main className="chat-layout guild-layout">
       <header className="chat-header">
         <div>
           <h1>{APP_NAME}</h1>
@@ -305,37 +405,98 @@ export function App() {
         </button>
       </header>
 
-      <section className="chat-box" aria-label="Messages">
-        {messages.length === 0 && <p className="empty">No messages yet.</p>}
-        {messages.map((message) => (
-          <article key={message.id} className="message">
-            <header>
-              <strong>{message.user}</strong>
-              <time>{new Date(message.createdAt).toLocaleTimeString()}</time>
-            </header>
-            <p>{message.text}</p>
-          </article>
-        ))}
-      </section>
+      <section className="guild-shell">
+        <aside className="sidebar">
+          <h3>Servers</h3>
+          <div className="list">
+            {servers.map((server) => (
+              <button
+                key={server.id}
+                type="button"
+                className={server.id === activeServerId ? 'list-item active' : 'list-item'}
+                onClick={() => setActiveServerId(server.id)}
+              >
+                {server.name}
+              </button>
+            ))}
+          </div>
+          <form className="inline-form" onSubmit={createServer}>
+            <input
+              value={serverNameInput}
+              onChange={(event) => setServerNameInput(event.target.value)}
+              placeholder="New server"
+            />
+            <button type="submit">Create</button>
+          </form>
+        </aside>
 
-      <form
-        className="composer"
-        onSubmit={(event) => {
-          event.preventDefault();
-          sendMessage();
-        }}
-      >
-        <input
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          placeholder="Type a message"
-          aria-label="Message"
-          maxLength={300}
-        />
-        <button type="submit" disabled={connectionState !== 'open' || !draft.trim()}>
-          Send
-        </button>
-      </form>
+        <aside className="sidebar">
+          <h3>Channels</h3>
+          <div className="list">
+            {channels.map((channel) => (
+              <button
+                key={channel.id}
+                type="button"
+                className={channel.id === activeChannelId ? 'list-item active' : 'list-item'}
+                onClick={() => setActiveChannelId(channel.id)}
+              >
+                #{channel.name}
+              </button>
+            ))}
+          </div>
+          <form className="inline-form" onSubmit={createChannel}>
+            <input
+              value={channelNameInput}
+              onChange={(event) => setChannelNameInput(event.target.value)}
+              placeholder="New channel"
+            />
+            <button type="submit" disabled={!activeServerId}>Add</button>
+          </form>
+          <form className="inline-form" onSubmit={addMember}>
+            <input
+              value={inviteUsernameInput}
+              onChange={(event) => setInviteUsernameInput(event.target.value)}
+              placeholder="Invite username"
+            />
+            <button type="submit" disabled={!activeServerId}>Invite</button>
+          </form>
+        </aside>
+
+        <section className="chat-panel">
+          <section className="chat-box" aria-label="Messages">
+            {!activeChannelId && <p className="empty">Pick a channel to start chatting.</p>}
+            {activeChannelId && messages.length === 0 && <p className="empty">No messages yet.</p>}
+            {messages.map((message) => (
+              <article key={message.id} className="message">
+                <header>
+                  <strong>{message.user}</strong>
+                  <time>{new Date(message.createdAt).toLocaleTimeString()}</time>
+                </header>
+                <p>{message.text}</p>
+              </article>
+            ))}
+          </section>
+
+          <form
+            className="composer"
+            onSubmit={(event) => {
+              event.preventDefault();
+              sendMessage();
+            }}
+          >
+            <input
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              placeholder={activeChannelId ? 'Type a message' : 'Select a channel first'}
+              aria-label="Message"
+              maxLength={300}
+            />
+            <button type="submit" disabled={connectionState !== 'open' || !draft.trim() || !activeChannelId}>
+              Send
+            </button>
+          </form>
+        </section>
+      </section>
 
       {error && <p className="error">{error}</p>}
     </main>

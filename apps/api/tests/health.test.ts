@@ -1,18 +1,25 @@
 import request from 'supertest';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import type { ChatMessage } from '@curly-broccoli/shared';
+import type { ChannelSummary, ChatMessage, ServerSummary } from '@curly-broccoli/shared';
 
 beforeAll(() => {
   process.env.JWT_SECRET = process.env.JWT_SECRET ?? 'test-secret';
 });
 
 const baseDeps = {
-  fetchRecentMessages: vi.fn<() => Promise<ChatMessage[]>>().mockResolvedValue([]),
+  fetchRecentMessages: vi.fn<(channelId: string) => Promise<ChatMessage[]>>().mockResolvedValue([]),
   findUserByUsername: vi.fn(),
+  findUserById: vi.fn(),
   createUser: vi.fn(),
   storeRefreshToken: vi.fn().mockResolvedValue(undefined),
   findRefreshToken: vi.fn(),
-  revokeRefreshToken: vi.fn().mockResolvedValue(undefined)
+  revokeRefreshToken: vi.fn().mockResolvedValue(undefined),
+  listServersForUser: vi.fn<() => Promise<ServerSummary[]>>().mockResolvedValue([]),
+  createServer: vi.fn(),
+  addServerMembership: vi.fn().mockResolvedValue(undefined),
+  listChannelsForServer: vi.fn<() => Promise<ChannelSummary[]>>().mockResolvedValue([]),
+  createChannel: vi.fn(),
+  addMemberByUsername: vi.fn()
 };
 
 describe('GET /health', () => {
@@ -31,7 +38,7 @@ describe('GET /messages', () => {
     const { createApp } = await import('../src/app.js');
     const app = createApp(baseDeps);
 
-    const res = await request(app).get('/messages?limit=10');
+    const res = await request(app).get('/messages?channelId=test-channel&limit=10');
 
     expect(res.status).toBe(401);
   });

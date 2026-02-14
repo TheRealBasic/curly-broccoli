@@ -26,6 +26,22 @@ export type ServerMember = {
   role: 'owner' | 'member';
 };
 
+export type DmThreadSummary = {
+  id: string;
+  otherUserId: string;
+  otherUsername: string;
+  lastMessageAt: string | null;
+};
+
+export type DmMessage = {
+  id: string;
+  threadId: string;
+  senderUserId: string;
+  senderUsername: string;
+  text: string;
+  createdAt: string;
+};
+
 export type ClientEvent =
   | {
       type: 'chat:join-channel';
@@ -48,6 +64,14 @@ export type ClientEvent =
       payload: { text: string };
     }
   | {
+      type: 'dm:join-thread';
+      payload: { threadId: string };
+    }
+  | {
+      type: 'dm:send';
+      payload: { text: string };
+    }
+  | {
       type: 'ping';
       payload?: Record<string, never>;
     };
@@ -64,6 +88,18 @@ export type ServerEvent =
   | {
       type: 'chat:message';
       payload: { message: ChatMessage };
+    }
+  | {
+      type: 'dm:history';
+      payload: { threadId: string; messages: DmMessage[] };
+    }
+  | {
+      type: 'dm:joined-thread';
+      payload: { threadId: string };
+    }
+  | {
+      type: 'dm:message';
+      payload: { message: DmMessage };
     }
   | {
       type: 'presence:sync';

@@ -3,6 +3,8 @@ import {
   APP_NAME,
   type ChannelSummary,
   type ChatMessage,
+  type DmMessage,
+  type DmThreadSummary,
   type ServerEvent,
   type ServerMember,
   type ServerSummary,
@@ -50,6 +52,7 @@ export function App() {
   const typingTimeoutRef = useRef<number | null>(null);
   const isTypingRef = useRef(false);
   const activeChannelRef = useRef<string | null>(null);
+  const activeDmThreadRef = useRef<string | null>(null);
 
   const [auth, setAuth] = useState<AuthState | null>(() => loadAuthState());
   const [authMode, setAuthMode] = useState<AuthMode>('login');
@@ -73,6 +76,11 @@ export function App() {
   const [serverNameInput, setServerNameInput] = useState('');
   const [channelNameInput, setChannelNameInput] = useState('');
   const [inviteUsernameInput, setInviteUsernameInput] = useState('');
+  const [dmThreads, setDmThreads] = useState<DmThreadSummary[]>([]);
+  const [activeDmThreadId, setActiveDmThreadId] = useState<string | null>(null);
+  const [dmMessages, setDmMessages] = useState<DmMessage[]>([]);
+  const [dmUsernameInput, setDmUsernameInput] = useState('');
+  const [chatMode, setChatMode] = useState<'channel' | 'dm'>('channel');
 
   const wsUrl = useMemo(() => {
     if (!auth?.accessToken) {
@@ -84,10 +92,15 @@ export function App() {
   }, [apiBase, auth?.accessToken]);
 
   const typingUsers = activeChannelId ? (typingByChannel[activeChannelId] ?? []) : [];
+  const visibleMessages = chatMode === 'dm' ? dmMessages : messages;
 
   useEffect(() => {
     activeChannelRef.current = activeChannelId;
   }, [activeChannelId]);
+
+  useEffect(() => {
+    activeDmThreadRef.current = activeDmThreadId;
+  }, [activeDmThreadId]);
 
   function updateAuth(next: AuthState | null) {
     setAuth(next);
@@ -171,6 +184,20 @@ export function App() {
     setMembers(data.members);
   }
 
+
+  async function loadDmThreads() {
+    const res = await authedFetch('/dm/threads');
+    if (!res.ok) {
+      throw new Error('Unable to load DM threads.');
+    }
+
+    const data = (await res.json()) as { threads: DmThreadSummary[] };
+    setDmThreads(data.threads);
+    if (!activeDmThreadId && data.threads.length > 0) {
+      setActiveDmThreadId(data.threads[0].id);
+    }
+  }
+
   useEffect(() => {
     if (!auth) {
       setConnectionState('closed');
@@ -183,10 +210,14 @@ export function App() {
       setActiveServerId(null);
       setActiveChannelId(null);
       setSystemMessage('Sign in to join chat.');
+      setDmThreads([]);
+      setActiveDmThreadId(null);
+      setDmMessages([]);
+      setChatMode('channel');
       return;
     }
 
-    void loadServers().catch((reason: unknown) => {
+    void Promise.all([loadServers(), loadDmThreads()]).catch((reason: unknown) => {
       setError(reason instanceof Error ? reason.message : 'Unable to load servers.');
     });
   }, [auth]);
@@ -244,6 +275,33 @@ export function App() {
       if (parsed.type === 'chat:message') {
         if (parsed.payload.message.channelId === activeChannelRef.current) {
           setMessages((prev) => [...prev, parsed.payload.message]);
+        }
+      }
+
+      if (parsed.type === 'dm:history') {
+        if (parsed.payload.threadId === activeDmThreadRef.current) {
+          setDmMessages(parsed.payload.messages);
+        }
+      }
+
+      if (parsed.type === 'dm:message') {
+        setDmThreads((prev) => {
+          const hasThread = prev.some((thread) => thread.id === parsed.payload.message.threadId);
+          if (!hasThread) {
+            return prev;
+          }
+
+          const next = prev.map((thread) =>
+            thread.id === parsed.payload.message.threadId
+              ? { ...thread, lastMessageAt: parsed.payload.message.createdAt }
+              : thread,
+          );
+          next.sort((a, b) => (b.lastMessageAt ?? '').localeCompare(a.lastMessageAt ?? ''));
+          return next;
+        });
+
+        if (parsed.payload.message.threadId === activeDmThreadRef.current) {
+          setDmMessages((prev) => [...prev, parsed.payload.message]);
         }
       }
 
@@ -348,10 +406,46 @@ export function App() {
     );
   }, [activeServerId, connectionState]);
 
+
+  useEffect(() => {
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN || !activeDmThreadId) {
+      return;
+    }
+
+    setDmMessages([]);
+    socket.send(
+      JSON.stringify({
+        type: 'dm:join-thread',
+        payload: { threadId: activeDmThreadId },
+      }),
+    );
+  }, [activeDmThreadId, connectionState]);
+
   function sendMessage() {
     const socket = socketRef.current;
     const text = draft.trim();
-    if (!socket || socket.readyState !== WebSocket.OPEN || !text || !activeChannelId) {
+    if (!socket || socket.readyState !== WebSocket.OPEN || !text) {
+      return;
+    }
+
+    if (chatMode === 'dm') {
+      if (!activeDmThreadId) {
+        return;
+      }
+
+      socket.send(
+        JSON.stringify({
+          type: 'dm:send',
+          payload: { text },
+        }),
+      );
+      setDraft('');
+      setError(null);
+      return;
+    }
+
+    if (!activeChannelId) {
       return;
     }
 
@@ -466,7 +560,34 @@ export function App() {
     setError(null);
   }
 
+  async function startDm(event: FormEvent) {
+    event.preventDefault();
+    const username = dmUsernameInput.trim().toLowerCase();
+    if (!username) {
+      return;
+    }
+
+    const res = await authedFetch('/dm/threads', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username }),
+    });
+
+    if (!res.ok) {
+      setError('Unable to start DM.');
+      return;
+    }
+
+    const data = (await res.json()) as { threadId: string };
+    setDmUsernameInput('');
+    setChatMode('dm');
+    setActiveDmThreadId(data.threadId);
+    await loadDmThreads();
+    setError(null);
+  }
+
   async function logout() {
+
     if (auth?.refreshToken) {
       await fetch(`${apiBase}/auth/logout`, {
         method: 'POST',
@@ -611,14 +732,45 @@ export function App() {
           </form>
         </aside>
 
+        <aside className="sidebar">
+          <h3>Direct Messages</h3>
+          <div className="list">
+            {dmThreads.map((thread) => (
+              <button
+                key={thread.id}
+                type="button"
+                className={thread.id === activeDmThreadId && chatMode === 'dm' ? 'list-item active' : 'list-item'}
+                onClick={() => {
+                  setChatMode('dm');
+                  setActiveDmThreadId(thread.id);
+                }}
+              >
+                @{thread.otherUsername}
+              </button>
+            ))}
+          </div>
+          <form className="inline-form" onSubmit={startDm}>
+            <input
+              value={dmUsernameInput}
+              onChange={(event) => setDmUsernameInput(event.target.value)}
+              placeholder="Start DM (username)"
+            />
+            <button type="submit">Start</button>
+          </form>
+          <button type="button" className="list-item" onClick={() => setChatMode('channel')}>
+            Back to channels
+          </button>
+        </aside>
+
         <section className="chat-panel">
           <section className="chat-box" aria-label="Messages">
-            {!activeChannelId && <p className="empty">Pick a channel to start chatting.</p>}
-            {activeChannelId && messages.length === 0 && <p className="empty">No messages yet.</p>}
-            {messages.map((message) => (
+            {chatMode === 'channel' && !activeChannelId && <p className="empty">Pick a channel to start chatting.</p>}
+            {chatMode === 'dm' && !activeDmThreadId && <p className="empty">Select a DM thread.</p>}
+            {((chatMode === 'channel' && activeChannelId) || (chatMode === 'dm' && activeDmThreadId)) && visibleMessages.length === 0 && <p className="empty">No messages yet.</p>}
+            {visibleMessages.map((message) => (
               <article key={message.id} className="message">
                 <header>
-                  <strong>{message.user}</strong>
+                  <strong>{'user' in message ? message.user : message.senderUsername}</strong>
                   <time>{new Date(message.createdAt).toLocaleTimeString()}</time>
                 </header>
                 <p>{message.text}</p>
@@ -626,7 +778,7 @@ export function App() {
             ))}
           </section>
 
-          <p className="typing-indicator" aria-live="polite">
+          {chatMode === 'channel' && <p className="typing-indicator" aria-live="polite">
             {typingUsers.length === 1 && `${typingUsers[0].username} is typing...`}
             {typingUsers.length > 1 &&
               `${typingUsers
@@ -636,7 +788,7 @@ export function App() {
                   ', ',
                 )}${typingUsers.length > 2 ? ` +${typingUsers.length - 2} others` : ''} are typing...`}
             {typingUsers.length === 0 && '\u00A0'}
-          </p>
+          </p>}
 
           <form
             className="composer"
@@ -650,6 +802,10 @@ export function App() {
               onChange={(event) => {
                 const nextValue = event.target.value;
                 setDraft(nextValue);
+
+                if (chatMode !== 'channel') {
+                  return;
+                }
 
                 const socket = socketRef.current;
                 if (!socket || socket.readyState !== WebSocket.OPEN || !activeChannelId) {
@@ -674,13 +830,13 @@ export function App() {
                 queueTypingStop();
               }}
               onBlur={() => sendTypingStop()}
-              placeholder={activeChannelId ? 'Type a message' : 'Select a channel first'}
+              placeholder={chatMode === 'dm' ? (activeDmThreadId ? 'Type a DM' : 'Select a DM thread') : activeChannelId ? 'Type a message' : 'Select a channel first'}
               aria-label="Message"
               maxLength={300}
             />
             <button
               type="submit"
-              disabled={connectionState !== 'open' || !draft.trim() || !activeChannelId}
+              disabled={connectionState !== 'open' || !draft.trim() || (chatMode === 'dm' ? !activeDmThreadId : !activeChannelId)}
             >
               Send
             </button>

@@ -5,6 +5,8 @@ import {
   APP_NAME,
   type ChannelSummary,
   type ChatMessage,
+  type DmMessage,
+  type DmThreadSummary,
   type ServerMember,
   type ServerSummary,
 } from '@curly-broccoli/shared';
@@ -65,6 +67,10 @@ type AppDependencies = {
     actorUserId: string,
   ) => Promise<{ userId: string; username: string } | null>;
   listServerMembers: (serverId: string, userId: string) => Promise<ServerMember[]>;
+  createOrGetDmThread: (userAId: string, userBId: string) => Promise<string>;
+  listDmThreadsForUser: (userId: string) => Promise<DmThreadSummary[]>;
+  fetchRecentDmMessages: (threadId: string, limit?: number) => Promise<DmMessage[]>;
+  canAccessDmThread: (threadId: string, userId: string) => Promise<boolean>;
 };
 
 function validateAuthInput(username: string, password: string) {
@@ -388,6 +394,73 @@ export function createApp(deps: AppDependencies) {
     } catch {
       res.status(403).json({ error: 'Only server owners can add members.' });
     }
+  });
+
+
+  app.get('/dm/threads', async (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) {
+      return;
+    }
+
+    const threads = await deps.listDmThreadsForUser(auth.userId);
+    res.json({ threads });
+  });
+
+  app.post('/dm/threads', async (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) {
+      return;
+    }
+
+    const username = String(req.body?.username ?? '')
+      .trim()
+      .toLowerCase();
+    if (!username) {
+      res.status(400).json({ error: 'username is required.' });
+      return;
+    }
+
+    const otherUser = await deps.findUserByUsername(username);
+    if (!otherUser) {
+      res.status(404).json({ error: 'User not found.' });
+      return;
+    }
+
+    if (otherUser.id === auth.userId) {
+      res.status(400).json({ error: 'Cannot DM yourself.' });
+      return;
+    }
+
+    const threadId = await deps.createOrGetDmThread(auth.userId, otherUser.id);
+    const threads = await deps.listDmThreadsForUser(auth.userId);
+    const thread = threads.find((item) => item.id === threadId);
+
+    res.status(201).json({ threadId, thread: thread ?? null });
+  });
+
+  app.get('/dm/messages', async (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) {
+      return;
+    }
+
+    const threadId = String(req.query.threadId ?? '').trim();
+    if (!threadId) {
+      res.status(400).json({ error: 'threadId query param is required.' });
+      return;
+    }
+
+    const allowed = await deps.canAccessDmThread(threadId, auth.userId);
+    if (!allowed) {
+      res.status(403).json({ error: 'You cannot access this DM thread.' });
+      return;
+    }
+
+    const limitRaw = Number(req.query.limit);
+    const limit = Number.isFinite(limitRaw) ? limitRaw : undefined;
+    const messages = await deps.fetchRecentDmMessages(threadId, limit);
+    res.json({ messages });
   });
 
   app.get('/', (_req, res) => {

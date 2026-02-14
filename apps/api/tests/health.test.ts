@@ -1,6 +1,6 @@
 import request from 'supertest';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import type { ChannelSummary, ChatMessage, ServerSummary } from '@curly-broccoli/shared';
+import type { ChannelSummary, ChatMessage, DmMessage, DmThreadSummary, ServerSummary } from '@curly-broccoli/shared';
 
 beforeAll(() => {
   process.env.JWT_SECRET = process.env.JWT_SECRET ?? 'test-secret';
@@ -19,7 +19,12 @@ const baseDeps = {
   addServerMembership: vi.fn().mockResolvedValue(undefined),
   listChannelsForServer: vi.fn<() => Promise<ChannelSummary[]>>().mockResolvedValue([]),
   createChannel: vi.fn(),
-  addMemberByUsername: vi.fn()
+  addMemberByUsername: vi.fn(),
+  listServerMembers: vi.fn().mockResolvedValue([]),
+  createOrGetDmThread: vi.fn<() => Promise<string>>().mockResolvedValue('thread-1'),
+  listDmThreadsForUser: vi.fn<() => Promise<DmThreadSummary[]>>().mockResolvedValue([]),
+  fetchRecentDmMessages: vi.fn<() => Promise<DmMessage[]>>().mockResolvedValue([]),
+  canAccessDmThread: vi.fn<() => Promise<boolean>>().mockResolvedValue(true),
 };
 
 describe('GET /health', () => {

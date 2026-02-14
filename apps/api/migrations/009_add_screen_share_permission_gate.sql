@@ -1,0 +1,2 @@
+ALTER TABLE server_memberships
+  ADD COLUMN IF NOT EXISTS can_share_screen BOOLEAN NOT NULL DEFAULT TRUE;

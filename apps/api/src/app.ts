@@ -44,7 +44,13 @@ type ModerationAuditLog = {
   targetUserId: string | null;
   targetUsername: string | null;
   messageId: string | null;
-  action: 'message_delete' | 'message_report' | 'user_mute';
+  action:
+    | 'message_delete'
+    | 'message_report'
+    | 'user_mute'
+    | 'screen_share_start'
+    | 'screen_share_stop'
+    | 'screen_share_force_stop';
   details: unknown;
   createdAt: string;
 };
@@ -93,7 +99,13 @@ type AppDependencies = {
     actorUserId: string;
     targetUserId?: string | null;
     messageId?: string | null;
-    action: 'message_delete' | 'message_report' | 'user_mute';
+    action:
+    | 'message_delete'
+    | 'message_report'
+    | 'user_mute'
+    | 'screen_share_start'
+    | 'screen_share_stop'
+    | 'screen_share_force_stop';
     details?: unknown;
   }) => Promise<void>;
   findUserByUsername: (username: string) => Promise<UserRecord | null>;

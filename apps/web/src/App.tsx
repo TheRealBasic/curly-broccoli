@@ -30,7 +30,13 @@ type ModerationAuditLog = {
   targetUserId: string | null;
   targetUsername: string | null;
   messageId: string | null;
-  action: 'message_delete' | 'message_report' | 'user_mute';
+  action:
+    | 'message_delete'
+    | 'message_report'
+    | 'user_mute'
+    | 'screen_share_start'
+    | 'screen_share_stop'
+    | 'screen_share_force_stop';
   details: unknown;
   createdAt: string;
 };
@@ -213,6 +219,10 @@ export function App() {
     channelId: string;
     presenter: VoiceParticipant;
   } | null>(null);
+  const [screenConsentState, setScreenConsentState] = useState<
+    'idle' | 'prompting' | 'granted' | 'denied'
+  >('idle');
+  const [screenShareScopeWarning, setScreenShareScopeWarning] = useState<string | null>(null);
   const [remoteScreenStream, setRemoteScreenStream] = useState<MediaStream | null>(null);
   const [activeServerId, setActiveServerId] = useState<string | null>(null);
   const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
@@ -576,6 +586,8 @@ export function App() {
 
   function stopAllVoice() {
     stopAllScreenShare();
+    setScreenShareScopeWarning(null);
+    setScreenConsentState('idle');
     for (const userId of Array.from(peerConnectionsRef.current.keys())) {
       closePeerConnection(userId);
     }
@@ -1204,6 +1216,8 @@ export function App() {
           return null;
         });
         setRemoteScreenStream(null);
+        setScreenShareScopeWarning(null);
+        setScreenConsentState('idle');
       }
 
       if (parsed.type === 'screen:viewer-joined') {
@@ -1219,6 +1233,10 @@ export function App() {
 
       if (parsed.type === 'screen:viewer-left') {
         closeScreenPeerConnection(parsed.payload.userId);
+      }
+
+      if (parsed.type === 'moderation:audit') {
+        setSystemMessage(`Moderation event: ${parsed.payload.action.replaceAll('_', ' ')}`);
       }
 
       if (parsed.type === 'screen:signal') {
@@ -1583,13 +1601,26 @@ export function App() {
     }
 
     try {
+      setScreenConsentState('prompting');
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: true,
         audio: true,
       });
+      setScreenConsentState('granted');
       localScreenStreamRef.current = stream;
       const [videoTrack] = stream.getVideoTracks();
       if (videoTrack) {
+        const label = videoTrack.label.toLowerCase();
+        if (label.includes('screen') || label.includes('display') || label.includes('monitor')) {
+          setScreenShareScopeWarning(
+            'You are sharing your entire display. Close sensitive apps and notifications.',
+          );
+        } else {
+          setScreenShareScopeWarning(
+            'You are sharing a single window/tab. Make sure confidential content stays hidden.',
+          );
+        }
+
         videoTrack.onended = () => {
           stopScreenShare();
         };
@@ -1609,8 +1640,32 @@ export function App() {
       }
       setError(null);
     } catch {
+      setScreenConsentState('denied');
       setError('Screen share permission is required.');
     }
+  }
+
+
+  function forceStopScreenShare() {
+    if (!activeScreenShare || !activeChannelId) {
+      return;
+    }
+
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      setError('Screen share moderation needs an active realtime connection.');
+      return;
+    }
+
+    socket.send(
+      JSON.stringify({
+        type: 'screen:force-stop',
+        payload: {
+          channelId: activeChannelId,
+          presenterUserId: activeScreenShare.presenter.userId,
+        },
+      }),
+    );
   }
 
   function stopScreenShare() {
@@ -1623,6 +1678,8 @@ export function App() {
     }
 
     stopAllScreenShare();
+    setScreenShareScopeWarning(null);
+    setScreenConsentState('idle');
     setActiveScreenShare((prev) => {
       if (prev && prev.presenter.userId === auth?.user.id) {
         return null;
@@ -2130,13 +2187,35 @@ export function App() {
                 <button
                   type="button"
                   onClick={() => void startScreenShare()}
-                  disabled={voiceChannelId !== activeChannelId || !!activeScreenShare}
+                  disabled={
+                    voiceChannelId !== activeChannelId ||
+                    !!activeScreenShare ||
+                    (currentMember ? !currentMember.canShareScreen : false)
+                  }
                 >
                   Start screen share
                 </button>
               )}
+              {isServerOwner &&
+                activeScreenShare &&
+                activeScreenShare.presenter.userId !== auth.user.id && (
+                  <button type="button" onClick={forceStopScreenShare}>
+                    Force stop share
+                  </button>
+                )}
             </div>
           </section>
+
+          <div className="share-consent-card">
+            <p className="subtle">
+              Browser consent: <strong>{screenConsentState}</strong> · In-app consent:{' '}
+              <strong>{activeScreenShare ? 'active' : 'not sharing'}</strong>
+            </p>
+            {screenShareScopeWarning && <p className="subtle">{screenShareScopeWarning}</p>}
+            {(currentMember ? !currentMember.canShareScreen : false) && (
+              <p className="subtle">Role gate active: you do not have the "Can share screen" permission.</p>
+            )}
+          </div>
           {activeScreenShare?.presenter.userId === auth.user.id && (
             <div className="share-banner">
               <strong>You are sharing</strong>
@@ -2429,6 +2508,7 @@ export function App() {
                   />
                   <span>{member.username}</span>
                   <small className="subtle">{member.role}</small>
+                  {!member.canShareScreen && <small className="subtle">no-share</small>}
                   {isServerOwner && member.userId !== auth.user.id && (
                     <button type="button" onClick={() => muteMember(member.userId)}>
                       Mute

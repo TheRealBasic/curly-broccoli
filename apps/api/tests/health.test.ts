@@ -1,5 +1,6 @@
 import request from 'supertest';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { createAccessToken } from '../src/auth.js';
 import type {
   ChannelSummary,
   ChatMessage,
@@ -142,5 +143,44 @@ describe('POST /auth/register and /auth/login', () => {
       process.env.AUTH_RATE_LIMIT_MAX = previousMax;
       process.env.AUTH_RATE_LIMIT_WINDOW_MS = previousWindow;
     }
+  });
+});
+
+
+describe('API permission checks', () => {
+  it('blocks channel history when user cannot access channel', async () => {
+    const { createApp } = await import('../src/app.js');
+    const app = createApp({
+      ...baseDeps,
+      canAccessChannel: vi.fn<() => Promise<boolean>>().mockResolvedValue(false),
+    });
+
+    const token = createAccessToken({ id: 'user-1', username: 'alice' });
+    const res = await request(app)
+      .get('/messages?channelId=channel-1')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(403);
+  });
+
+  it('blocks image uploads when user cannot access channel', async () => {
+    const { createApp } = await import('../src/app.js');
+    const app = createApp({
+      ...baseDeps,
+      canAccessChannel: vi.fn<() => Promise<boolean>>().mockResolvedValue(false),
+    });
+
+    const token = createAccessToken({ id: 'user-1', username: 'alice' });
+    const res = await request(app)
+      .post('/uploads/images')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        channelId: 'channel-1',
+        fileName: 'screen.png',
+        mimeType: 'image/png',
+        fileDataBase64: Buffer.from('hello').toString('base64'),
+      });
+
+    expect(res.status).toBe(403);
   });
 });

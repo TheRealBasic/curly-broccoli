@@ -7,6 +7,8 @@ import {
   type ClientEvent,
   type DmMessage,
   type ServerEvent,
+  isValidClientEvent,
+  parseScreenShareRolloutStage,
 } from '@curly-broccoli/shared';
 import { createApp } from './app.js';
 import { verifyAccessToken } from './auth.js';
@@ -106,6 +108,43 @@ const voiceChannelByConnection = new Map<net.Socket, string>();
 const screenPresenterByChannel = new Map<string, string>();
 const screenChannelByPresenterUserId = new Map<string, string>();
 const screenViewersByChannel = new Map<string, Set<string>>();
+
+
+function parseCsvSet(raw: string | undefined) {
+  if (!raw) {
+    return new Set<string>();
+  }
+
+  return new Set(
+    raw
+      .split(',')
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0),
+  );
+}
+
+function isScreenShareEnabledForUser(channelId: string, username: string) {
+  const stage = parseScreenShareRolloutStage(process.env.SCREEN_SHARE_ROLLOUT_STAGE);
+  if (stage === 'disabled') {
+    return false;
+  }
+
+  if (stage === 'full') {
+    return true;
+  }
+
+  const internalUsers = parseCsvSet(process.env.SCREEN_SHARE_INTERNAL_USERNAMES);
+  if (internalUsers.has(username)) {
+    return true;
+  }
+
+  if (stage === 'internal') {
+    return false;
+  }
+
+  const betaChannels = parseCsvSet(process.env.SCREEN_SHARE_BETA_CHANNEL_IDS);
+  return betaChannels.has(channelId);
+}
 
 function encodeFrame(text: string) {
   const payload = Buffer.from(text);
@@ -574,7 +613,16 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
   let event: ClientEvent;
 
   try {
-    event = JSON.parse(raw) as ClientEvent;
+    const parsed = JSON.parse(raw) as unknown;
+    if (!isValidClientEvent(parsed)) {
+      sendEvent(socket, {
+        type: 'error',
+        payload: { message: 'Invalid event payload.' },
+      });
+      return;
+    }
+
+    event = parsed as ClientEvent;
   } catch {
     sendEvent(socket, {
       type: 'error',
@@ -768,6 +816,14 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
       sendEvent(socket, {
         type: 'error',
         payload: { message: 'Join the voice channel before sharing your screen.' },
+      });
+      return;
+    }
+
+    if (!isScreenShareEnabledForUser(channelId, currentUser.username)) {
+      sendEvent(socket, {
+        type: 'error',
+        payload: { message: 'Screen sharing is not enabled for this rollout stage.' },
       });
       return;
     }

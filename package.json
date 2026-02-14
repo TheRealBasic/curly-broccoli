@@ -9,7 +9,10 @@
     "test": "pnpm -r test",
     "lint": "pnpm -r lint",
     "format": "prettier --check .",
-    "format:write": "prettier --write ."
+    "format:write": "prettier --write .",
+    "desktop:dev": "pnpm --filter @curly-broccoli/desktop dev",
+    "desktop:build": "pnpm --filter @curly-broccoli/desktop build",
+    "desktop:dist": "pnpm --filter @curly-broccoli/desktop dist"
   },
   "devDependencies": {
     "prettier": "^3.3.3",

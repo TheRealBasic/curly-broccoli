@@ -1,0 +1,49 @@
+{
+  "name": "@curly-broccoli/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/main.js",
+  "type": "commonjs",
+  "scripts": {
+    "dev:web": "pnpm --filter @curly-broccoli/web dev",
+    "dev:main": "tsc -p tsconfig.json --watch",
+    "dev:electron": "wait-on tcp:5173 dist/main.js && cross-env NODE_ENV=development ELECTRON_START_URL=http://localhost:5173 electron .",
+    "dev": "concurrently -k \"pnpm dev:web\" \"pnpm dev:main\" \"pnpm dev:electron\"",
+    "build:main": "tsc -p tsconfig.json",
+    "build:web": "pnpm --filter @curly-broccoli/web build",
+    "copy:web": "node ./scripts/copy-web-dist.mjs",
+    "build": "pnpm build:main && pnpm build:web && pnpm copy:web",
+    "dist": "pnpm build && electron-builder --win"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.5",
+    "concurrently": "^9.0.1",
+    "cross-env": "^7.0.3",
+    "electron": "^32.1.2",
+    "electron-builder": "^25.0.5",
+    "typescript": "^5.6.2",
+    "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "com.curlybroccoli.desktop",
+    "productName": "Curly Broccoli Chat",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

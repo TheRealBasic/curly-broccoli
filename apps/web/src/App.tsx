@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { FormEvent, Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import {
   APP_NAME,
   type ChannelSummary,
@@ -41,7 +41,15 @@ type PendingImageUpload = {
 };
 
 const AUTH_STORAGE_KEY = 'curly_broccoli_auth';
+const DESKTOP_NOTIFICATIONS_STORAGE_KEY = 'curly_broccoli_desktop_notifications_enabled';
 const TYPING_STOP_DELAY_MS = 1200;
+
+type NotificationPermissionState = 'unsupported' | NotificationPermission;
+
+type MentionSegment = {
+  text: string;
+  mentioned: boolean;
+};
 
 function loadAuthState() {
   const raw = localStorage.getItem(AUTH_STORAGE_KEY);
@@ -66,6 +74,40 @@ function saveAuthState(value: AuthState | null) {
   localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(value));
 }
 
+function loadDesktopNotificationsEnabled() {
+  return localStorage.getItem(DESKTOP_NOTIFICATIONS_STORAGE_KEY) === 'true';
+}
+
+function saveDesktopNotificationsEnabled(value: boolean) {
+  localStorage.setItem(DESKTOP_NOTIFICATIONS_STORAGE_KEY, String(value));
+}
+
+function parseMentionSegments(text: string) {
+  const mentionRegex = /(@[a-z0-9_]{3,32})/gi;
+  const parts = text.split(mentionRegex);
+  return parts
+    .filter((part) => part.length > 0)
+    .map((part) => ({
+      text: part,
+      mentioned: /^@[a-z0-9_]{3,32}$/i.test(part),
+    })) satisfies MentionSegment[];
+}
+
+function containsMentionForUser(text: string, username: string) {
+  const escaped = username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const mentionPattern = new RegExp(`(^|[^a-z0-9_])@${escaped}(?=$|[^a-z0-9_])`, 'i');
+  return mentionPattern.test(text);
+}
+
+function previewText(text: string) {
+  const normalized = text.trim();
+  if (!normalized) {
+    return '[image]';
+  }
+
+  return normalized.length > 70 ? `${normalized.slice(0, 67)}...` : normalized;
+}
+
 function fileToBase64(file: File) {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
@@ -86,6 +128,9 @@ export function App() {
   const isTypingRef = useRef(false);
   const activeChannelRef = useRef<string | null>(null);
   const activeDmThreadRef = useRef<string | null>(null);
+  const chatModeRef = useRef<'channel' | 'dm'>('channel');
+  const desktopNotificationsEnabledRef = useRef(false);
+  const notificationPermissionRef = useRef<NotificationPermissionState>('unsupported');
 
   const [auth, setAuth] = useState<AuthState | null>(() => loadAuthState());
   const [authMode, setAuthMode] = useState<AuthMode>('login');
@@ -116,6 +161,17 @@ export function App() {
   const [dmUsernameInput, setDmUsernameInput] = useState('');
   const [chatMode, setChatMode] = useState<'channel' | 'dm'>('channel');
   const [pendingImageUploads, setPendingImageUploads] = useState<PendingImageUpload[]>([]);
+  const [channelUnreadCounts, setChannelUnreadCounts] = useState<Record<string, number>>({});
+  const [dmUnreadCounts, setDmUnreadCounts] = useState<Record<string, number>>({});
+  const [desktopNotificationsEnabled, setDesktopNotificationsEnabled] = useState(() =>
+    loadDesktopNotificationsEnabled(),
+  );
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermissionState>(
+    () =>
+      typeof window !== 'undefined' && 'Notification' in window
+        ? Notification.permission
+        : 'unsupported',
+  );
 
   const wsUrl = useMemo(() => {
     if (!auth?.accessToken) {
@@ -130,6 +186,11 @@ export function App() {
   const visibleMessages = chatMode === 'dm' ? dmMessages : messages;
   const currentMember = members.find((member) => member.userId === auth?.user.id) ?? null;
   const isServerOwner = currentMember?.role === 'owner';
+  const totalChannelUnread = Object.values(channelUnreadCounts).reduce(
+    (sum, value) => sum + value,
+    0,
+  );
+  const totalDmUnread = Object.values(dmUnreadCounts).reduce((sum, value) => sum + value, 0);
 
   useEffect(() => {
     activeChannelRef.current = activeChannelId;
@@ -138,6 +199,19 @@ export function App() {
   useEffect(() => {
     activeDmThreadRef.current = activeDmThreadId;
   }, [activeDmThreadId]);
+
+  useEffect(() => {
+    chatModeRef.current = chatMode;
+  }, [chatMode]);
+
+  useEffect(() => {
+    desktopNotificationsEnabledRef.current = desktopNotificationsEnabled;
+    saveDesktopNotificationsEnabled(desktopNotificationsEnabled);
+  }, [desktopNotificationsEnabled]);
+
+  useEffect(() => {
+    notificationPermissionRef.current = notificationPermission;
+  }, [notificationPermission]);
 
   function updateAuth(next: AuthState | null) {
     setAuth(next);
@@ -263,6 +337,8 @@ export function App() {
       setChatMode('channel');
       setAuditLogs([]);
       setPendingImageUploads([]);
+      setChannelUnreadCounts({});
+      setDmUnreadCounts({});
       return;
     }
 
@@ -410,6 +486,56 @@ export function App() {
         }));
       }
 
+      if (parsed.type === 'notification:channel-message') {
+        if (parsed.payload.senderUserId !== auth.user.id) {
+          const isActiveView =
+            chatModeRef.current === 'channel' &&
+            activeChannelRef.current === parsed.payload.channelId;
+
+          if (!isActiveView) {
+            setChannelUnreadCounts((prev) => ({
+              ...prev,
+              [parsed.payload.channelId]: (prev[parsed.payload.channelId] ?? 0) + 1,
+            }));
+          }
+
+          if (
+            desktopNotificationsEnabledRef.current &&
+            notificationPermissionRef.current === 'granted' &&
+            containsMentionForUser(parsed.payload.text, auth.user.username)
+          ) {
+            new Notification(
+              `#${channels.find((item) => item.id === parsed.payload.channelId)?.name ?? 'channel'}`,
+              {
+                body: `${parsed.payload.senderUsername}: ${previewText(parsed.payload.text)}`,
+              },
+            );
+          }
+        }
+      }
+
+      if (parsed.type === 'notification:dm-message') {
+        if (parsed.payload.senderUserId !== auth.user.id) {
+          const isActiveView =
+            chatModeRef.current === 'dm' && activeDmThreadRef.current === parsed.payload.threadId;
+          if (!isActiveView) {
+            setDmUnreadCounts((prev) => ({
+              ...prev,
+              [parsed.payload.threadId]: (prev[parsed.payload.threadId] ?? 0) + 1,
+            }));
+          }
+
+          if (
+            desktopNotificationsEnabledRef.current &&
+            notificationPermissionRef.current === 'granted'
+          ) {
+            new Notification(`DM from @${parsed.payload.senderUsername}`, {
+              body: previewText(parsed.payload.text),
+            });
+          }
+        }
+      }
+
       if (parsed.type === 'system') {
         setSystemMessage(parsed.payload.text);
       }
@@ -432,6 +558,10 @@ export function App() {
   }, [wsUrl, auth?.user.id]);
 
   useEffect(() => {
+    if (activeChannelId) {
+      setChannelUnreadCounts((prev) => ({ ...prev, [activeChannelId]: 0 }));
+    }
+
     const socket = socketRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN || !activeChannelId) {
       return;
@@ -459,6 +589,10 @@ export function App() {
   }, [activeServerId, connectionState]);
 
   useEffect(() => {
+    if (activeDmThreadId) {
+      setDmUnreadCounts((prev) => ({ ...prev, [activeDmThreadId]: 0 }));
+    }
+
     const socket = socketRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN || !activeDmThreadId) {
       return;
@@ -472,6 +606,53 @@ export function App() {
       }),
     );
   }, [activeDmThreadId, connectionState]);
+
+  function renderMessageText(text: string, currentUsername: string) {
+    const segments = parseMentionSegments(text);
+    return (
+      <>
+        {segments.map((segment, index) => {
+          const isSelfMention =
+            segment.mentioned &&
+            segment.text.slice(1).toLowerCase() === currentUsername.toLowerCase();
+          const className = isSelfMention
+            ? 'mention mention-self'
+            : segment.mentioned
+              ? 'mention'
+              : undefined;
+          return (
+            <Fragment key={`${segment.text}-${index}`}>
+              {className ? <mark className={className}>{segment.text}</mark> : segment.text}
+            </Fragment>
+          );
+        })}
+      </>
+    );
+  }
+
+  async function toggleDesktopNotifications(enabled: boolean) {
+    if (!enabled) {
+      setDesktopNotificationsEnabled(false);
+      return;
+    }
+
+    if (typeof window === 'undefined' || !('Notification' in window)) {
+      setNotificationPermission('unsupported');
+      setError('Desktop notifications are not supported in this browser.');
+      return;
+    }
+
+    const permission = await Notification.requestPermission();
+    setNotificationPermission(permission);
+    if (permission !== 'granted') {
+      setDesktopNotificationsEnabled(false);
+      setError('Desktop notification permission was not granted.');
+      return;
+    }
+
+    setDesktopNotificationsEnabled(true);
+    setError(null);
+  }
 
   function sendMessage() {
     const socket = socketRef.current;
@@ -817,6 +998,20 @@ export function App() {
         </button>
       </header>
 
+      <section className="notification-settings">
+        <label>
+          <input
+            type="checkbox"
+            checked={desktopNotificationsEnabled}
+            onChange={(event) => {
+              void toggleDesktopNotifications(event.target.checked);
+            }}
+          />
+          Enable desktop notifications
+        </label>
+        <small className="subtle">Permission: {notificationPermission}</small>
+      </section>
+
       <section className="guild-shell">
         <aside className="sidebar">
           <h3>Servers</h3>
@@ -843,7 +1038,7 @@ export function App() {
         </aside>
 
         <aside className="sidebar">
-          <h3>Channels</h3>
+          <h3>Channels {totalChannelUnread > 0 ? `(${totalChannelUnread})` : ''}</h3>
           <div className="list">
             {channels.map((channel) => (
               <button
@@ -853,6 +1048,9 @@ export function App() {
                 onClick={() => setActiveChannelId(channel.id)}
               >
                 #{channel.name}
+                {(channelUnreadCounts[channel.id] ?? 0) > 0 && (
+                  <span className="unread-badge">{channelUnreadCounts[channel.id]}</span>
+                )}
               </button>
             ))}
           </div>
@@ -879,7 +1077,7 @@ export function App() {
         </aside>
 
         <aside className="sidebar">
-          <h3>Direct Messages</h3>
+          <h3>Direct Messages {totalDmUnread > 0 ? `(${totalDmUnread})` : ''}</h3>
           <div className="list">
             {dmThreads.map((thread) => (
               <button
@@ -896,6 +1094,9 @@ export function App() {
                 }}
               >
                 @{thread.otherUsername}
+                {(dmUnreadCounts[thread.id] ?? 0) > 0 && (
+                  <span className="unread-badge">{dmUnreadCounts[thread.id]}</span>
+                )}
               </button>
             ))}
           </div>
@@ -927,7 +1128,7 @@ export function App() {
                   <strong>{'user' in message ? message.user : message.senderUsername}</strong>
                   <time>{new Date(message.createdAt).toLocaleTimeString()}</time>
                 </header>
-                <p>{message.text}</p>
+                <p>{renderMessageText(message.text, auth.user.username)}</p>
                 {'attachments' in message && message.attachments.length > 0 && (
                   <div className="attachment-grid">
                     {message.attachments.map((attachment) => (

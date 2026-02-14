@@ -11,10 +11,13 @@ export type ChatMessage = {
   editedAt?: string | null;
 };
 
+export type AttachmentCategory = 'image' | 'audio' | 'video' | 'document' | 'other';
+
 export type MessageAttachment = {
   id: string;
   fileName: string;
   mimeType: string;
+  category: AttachmentCategory;
   sizeBytes: number;
   url: string;
 };

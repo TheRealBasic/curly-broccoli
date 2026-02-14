@@ -179,11 +179,33 @@ function toCursor(createdAt: Date | string, id: string): PaginationCursor {
   return { createdAt: new Date(createdAt).toISOString(), id };
 }
 
+
+function deriveAttachmentCategory(mimeType: string): AttachmentCategory {
+  if (mimeType.startsWith('image/')) {
+    return 'image';
+  }
+
+  if (mimeType.startsWith('audio/')) {
+    return 'audio';
+  }
+
+  if (mimeType.startsWith('video/')) {
+    return 'video';
+  }
+
+  if (mimeType.startsWith('text/') || mimeType.startsWith('application/')) {
+    return 'document';
+  }
+
+  return 'other';
+}
+
 function mapAttachmentRow(row: MessageAttachmentRow): MessageAttachment {
   return {
     id: row.id,
     fileName: row.file_name,
     mimeType: row.mime_type,
+    category: deriveAttachmentCategory(row.mime_type),
     sizeBytes: row.size_bytes,
     url: `/${row.storage_path}`,
   };
@@ -593,6 +615,7 @@ export async function createMessageAttachment(attachment: {
   uploadedByUserId: string;
   fileName: string;
   mimeType: string;
+  category: AttachmentCategory;
   sizeBytes: number;
   storagePath: string;
 }) {

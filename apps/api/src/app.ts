@@ -1,10 +1,12 @@
 import cors from 'cors';
 import express from 'express';
+import multer from 'multer';
 import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import {
   APP_NAME,
+  type AttachmentCategory,
   type ChannelSummary,
   type ChatMessage,
   type DmMessage,
@@ -205,12 +207,14 @@ type AppDependencies = {
     uploadedByUserId: string;
     fileName: string;
     mimeType: string;
+    category: AttachmentCategory;
     sizeBytes: number;
     storagePath: string;
   }) => Promise<{
     id: string;
     fileName: string;
     mimeType: string;
+    category: AttachmentCategory;
     sizeBytes: number;
     url: string;
   }>;
@@ -221,6 +225,40 @@ type RequestMetric = {
   byRoute: Map<string, number>;
   byStatus: Map<string, number>;
 };
+
+type UploadPolicyRule = {
+  category: AttachmentCategory;
+  mimePrefixes: string[];
+  maxSizeBytes: number;
+};
+
+type UploadPolicyConfig = {
+  allowedCategories: AttachmentCategory[];
+  rules: UploadPolicyRule[];
+  antivirusScan?: (file: { fileName: string; mimeType: string; buffer: Buffer }) => Promise<void>;
+};
+
+const uploadPolicy: UploadPolicyConfig = {
+  allowedCategories: ['image', 'audio', 'video', 'document'],
+  rules: [
+    { category: 'image', mimePrefixes: ['image/'], maxSizeBytes: 5 * 1024 * 1024 },
+    { category: 'audio', mimePrefixes: ['audio/'], maxSizeBytes: 15 * 1024 * 1024 },
+    { category: 'video', mimePrefixes: ['video/'], maxSizeBytes: 25 * 1024 * 1024 },
+    {
+      category: 'document',
+      mimePrefixes: ['text/', 'application/'],
+      maxSizeBytes: 10 * 1024 * 1024,
+    },
+  ],
+};
+
+const maxUploadSizeBytes = Math.max(...uploadPolicy.rules.map((rule) => rule.maxSizeBytes));
+
+function getUploadPolicyRule(mimeType: string) {
+  return uploadPolicy.rules.find((rule) =>
+    rule.mimePrefixes.some((prefix) => mimeType.startsWith(prefix)),
+  );
+}
 
 function parseAllowedOrigins(raw: string | undefined) {
   if (!raw) {
@@ -323,7 +361,10 @@ export function createApp(deps: AppDependencies) {
 
   const allowedOrigins = parseAllowedOrigins(process.env.CORS_ALLOWED_ORIGINS);
   const uploadsDir = path.resolve(process.cwd(), 'uploads');
-  const maxImageSizeBytes = 5 * 1024 * 1024;
+  const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: maxUploadSizeBytes },
+  });
   const maxSearchLimit = 100;
   const checkAuthRateLimit = createRateLimiter(
     Number(process.env.AUTH_RATE_LIMIT_MAX ?? 20),
@@ -691,6 +732,62 @@ export function createApp(deps: AppDependencies) {
     }
   });
 
+
+  async function persistAttachmentUpload(params: {
+    authUserId: string;
+    channelId: string;
+    originalName: string;
+    mimeType: string;
+    fileBuffer: Buffer;
+  }) {
+    const allowed = await deps.canAccessChannel(params.channelId, params.authUserId);
+    if (!allowed) {
+      return { error: { status: 403, message: 'You cannot upload to this channel.' } } as const;
+    }
+
+    const policyRule = getUploadPolicyRule(params.mimeType);
+    if (!policyRule || !uploadPolicy.allowedCategories.includes(policyRule.category)) {
+      return { error: { status: 415, message: 'This file type is not allowed.' } } as const;
+    }
+
+    if (params.fileBuffer.length === 0 || params.fileBuffer.length > policyRule.maxSizeBytes) {
+      return {
+        error: {
+          status: 400,
+          message: `Attachment must be between 1 byte and ${Math.floor(policyRule.maxSizeBytes / 1024 / 1024)}MB for ${policyRule.category} files.`,
+        },
+      } as const;
+    }
+
+    if (uploadPolicy.antivirusScan) {
+      await uploadPolicy.antivirusScan({
+        fileName: params.originalName,
+        mimeType: params.mimeType,
+        buffer: params.fileBuffer,
+      });
+    }
+
+    const safeName = params.originalName.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const fileName = `${randomUUID()}-${safeName}`;
+    const storagePath = path.posix.join('uploads', fileName);
+
+    await mkdir(uploadsDir, { recursive: true });
+    await writeFile(path.join(uploadsDir, fileName), params.fileBuffer);
+
+    const attachment = await deps.createMessageAttachment({
+      id: randomUUID(),
+      uploadedByUserId: params.authUserId,
+      fileName: params.originalName,
+      mimeType: params.mimeType,
+      category: policyRule.category,
+      sizeBytes: params.fileBuffer.length,
+      storagePath,
+    });
+
+    return { attachment } as const;
+  }
+
+
   app.post('/uploads/images', async (req, res) => {
     const auth = requireAuth(req, res);
     if (!auth) {
@@ -719,36 +816,58 @@ export function createApp(deps: AppDependencies) {
       return;
     }
 
-    const allowed = await deps.canAccessChannel(channelId, auth.userId);
-    if (!allowed) {
-      res.status(403).json({ error: 'You cannot upload to this channel.' });
-      return;
-    }
-
-    const fileBuffer = Buffer.from(base64Data, 'base64');
-    if (fileBuffer.length === 0 || fileBuffer.length > maxImageSizeBytes) {
-      res.status(400).json({ error: 'Image must be between 1 byte and 5MB.' });
-      return;
-    }
-
-    const safeName = originalName.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const fileName = `${randomUUID()}-${safeName}`;
-    const storagePath = path.posix.join('uploads', fileName);
-
-    await mkdir(uploadsDir, { recursive: true });
-    await writeFile(path.join(uploadsDir, fileName), fileBuffer);
-
-    const attachment = await deps.createMessageAttachment({
-      id: randomUUID(),
-      uploadedByUserId: auth.userId,
-      fileName: originalName,
+    const result = await persistAttachmentUpload({
+      authUserId: auth.userId,
+      channelId,
+      originalName,
       mimeType,
-      sizeBytes: fileBuffer.length,
-      storagePath,
+      fileBuffer: Buffer.from(base64Data, 'base64'),
     });
 
-    res.status(201).json({ attachment });
+    if ('error' in result) {
+      res.status(result.error.status).json({ error: result.error.message });
+      return;
+    }
+
+    res.status(201).json({ attachment: result.attachment });
   });
+
+  app.post('/uploads/attachments', upload.single('file'), async (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) {
+      return;
+    }
+
+    const channelId = String(req.body?.channelId ?? '').trim();
+    const file = req.file;
+
+    if (!channelId) {
+      res.status(400).json({ error: 'channelId is required.' });
+      return;
+    }
+
+    if (!file) {
+      res.status(400).json({ error: 'file is required.' });
+      return;
+    }
+
+    const mimeType = String(file.mimetype ?? '').trim().toLowerCase();
+    const result = await persistAttachmentUpload({
+      authUserId: auth.userId,
+      channelId,
+      originalName: file.originalname,
+      mimeType,
+      fileBuffer: file.buffer,
+    });
+
+    if ('error' in result) {
+      res.status(result.error.status).json({ error: result.error.message });
+      return;
+    }
+
+    res.status(201).json({ attachment: result.attachment });
+  });
+
 
   app.get('/servers', async (req, res) => {
     const auth = requireAuth(req, res);

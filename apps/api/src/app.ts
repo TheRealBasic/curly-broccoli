@@ -132,6 +132,7 @@ type AppDependencies = {
   getServerAiSettings: (serverId: string) => Promise<{
     serverId: string;
     enabled: boolean;
+    botDisplayName: string;
     model: string;
     systemPrompt: string | null;
     maxTokensPerReply: number | null;
@@ -143,6 +144,7 @@ type AppDependencies = {
     actorUserId: string,
     patch: {
       enabled?: boolean;
+      botDisplayName?: string;
       model?: string;
       systemPrompt?: string | null;
       maxTokensPerReply?: number | null;
@@ -152,6 +154,7 @@ type AppDependencies = {
   ) => Promise<{
     serverId: string;
     enabled: boolean;
+    botDisplayName: string;
     model: string;
     systemPrompt: string | null;
     maxTokensPerReply: number | null;
@@ -1491,6 +1494,7 @@ export function createApp(deps: AppDependencies) {
 
     const patch: {
       enabled?: boolean;
+      botDisplayName?: string;
       model?: string;
       systemPrompt?: string | null;
       maxTokensPerReply?: number | null;
@@ -1504,6 +1508,14 @@ export function createApp(deps: AppDependencies) {
         return;
       }
       patch.enabled = req.body.enabled;
+    }
+
+    if ('botDisplayName' in req.body) {
+      if (typeof req.body.botDisplayName !== 'string' || req.body.botDisplayName.trim().length === 0) {
+        res.status(400).json({ error: 'botDisplayName must be a non-empty string.' });
+        return;
+      }
+      patch.botDisplayName = req.body.botDisplayName.trim();
     }
 
     if ('model' in req.body) {

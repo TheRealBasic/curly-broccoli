@@ -13,6 +13,7 @@ import {
   parseScreenShareRolloutStage,
 } from '@curly-broccoli/shared';
 import { createApp } from './app.js';
+import { requestChannelAiReply } from './ai/service.js';
 import { verifyAccessToken } from './auth.js';
 import {
   addMemberByUsername,
@@ -128,6 +129,7 @@ const RATE_LIMIT_WINDOW_MS = 4_000;
 const RATE_LIMIT_MAX_MESSAGES = 6;
 const SOUNDBOARD_RATE_LIMIT_WINDOW_MS = 5_000;
 const SOUNDBOARD_RATE_LIMIT_MAX_EVENTS = 5;
+const AI_INVOKE_COOLDOWN_MS = 2_500;
 const clients = new Set<net.Socket>();
 const userByConnection = new Map<net.Socket, { userId: string; username: string }>();
 const activeChannelByConnection = new Map<net.Socket, string>();
@@ -144,6 +146,8 @@ const typingByChannel = new Map<
   string,
   Map<string, { username: string; connections: Set<net.Socket> }>
 >();
+const aiPendingByChannel = new Set<string>();
+const aiLastInvokeByUserChannel = new Map<string, number>();
 const voiceConnectionsByChannel = new Map<string, Set<net.Socket>>();
 const voiceChannelByConnection = new Map<net.Socket, string>();
 const screenPresenterByChannel = new Map<string, string>();
@@ -181,6 +185,37 @@ function canControlWatchSession(state: CoWatchPlaybackState, userId: string) {
 function broadcastWatchEvent(channelId: string, event: ServerEvent) {
   broadcastToChannel(channelId, event);
 }
+
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function parseAiInvocation(text: string, botDisplayName: string): string | null {
+  const trimmedText = text.trim();
+  if (!trimmedText) {
+    return null;
+  }
+
+  const commandMatch = trimmedText.match(/^\/ask(?:\s+(.+))?$/i);
+  if (commandMatch) {
+    return commandMatch[1]?.trim() || null;
+  }
+
+  const escapedName = escapeRegExp(botDisplayName.trim());
+  if (!escapedName) {
+    return null;
+  }
+
+  const mentionPattern = new RegExp(`(?:^|\\s)@${escapedName}(?:\\b|\\s|$)`, 'i');
+  if (!mentionPattern.test(trimmedText)) {
+    return null;
+  }
+
+  const withoutMention = trimmedText.replace(mentionPattern, ' ').trim();
+  return withoutMention.length > 0 ? withoutMention : null;
+}
+
 
 
 function parseCsvSet(raw: string | undefined) {
@@ -1505,6 +1540,79 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
       type: 'chat:message',
       payload: { message },
     });
+
+    const aiSettings = await getServerAiSettings(server.server_id);
+    const botDisplayName = aiSettings?.botDisplayName?.trim() || 'assistant';
+    const prompt = parseAiInvocation(text, botDisplayName);
+
+    if (
+      prompt &&
+      aiSettings?.enabled &&
+      !aiPendingByChannel.has(activeChannelId) &&
+      currentUser.username.toLowerCase() !== botDisplayName.toLowerCase()
+    ) {
+      const channelAllowed = await canAccessChannel(activeChannelId, currentUser.userId);
+      const rateLimitKey = `${currentUser.userId}:${activeChannelId}`;
+      const now = Date.now();
+      const lastInvocationAt = aiLastInvokeByUserChannel.get(rateLimitKey) ?? 0;
+
+      if (channelAllowed && now - lastInvocationAt >= AI_INVOKE_COOLDOWN_MS) {
+        aiLastInvokeByUserChannel.set(rateLimitKey, now);
+        aiPendingByChannel.add(activeChannelId);
+
+        const requestId = randomUUID();
+        broadcastToChannel(activeChannelId, {
+          type: 'chat:bot-pending',
+          payload: {
+            channelId: activeChannelId,
+            requestId,
+            requestedByUserId: currentUser.userId,
+            botDisplayName,
+          },
+        });
+
+        void (async () => {
+          try {
+            const aiResult = await requestChannelAiReply({
+              requestId,
+              serverId: server.server_id,
+              channelId: activeChannelId,
+              requesterUserId: currentUser.userId,
+              requesterUsername: currentUser.username,
+              botDisplayName,
+              prompt,
+              model: aiSettings.model,
+              systemPrompt: aiSettings.systemPrompt,
+              maxTokensPerReply: aiSettings.maxTokensPerReply,
+              temperature: aiSettings.temperature,
+            });
+
+            if (!aiResult.ok || !aiResult.value.outputText.trim()) {
+              return;
+            }
+
+            const botMessage = await saveMessage({
+              id: randomUUID(),
+              channelId: activeChannelId,
+              userId: null,
+              user: botDisplayName,
+              text: aiResult.value.outputText.trim(),
+              createdAt: new Date().toISOString(),
+              attachmentIds: [],
+            });
+
+            broadcastToChannel(activeChannelId, {
+              type: 'chat:message',
+              payload: { message: botMessage },
+            });
+          } catch (error) {
+            console.error('Failed to process AI channel invocation.', error);
+          } finally {
+            aiPendingByChannel.delete(activeChannelId);
+          }
+        })();
+      }
+    }
 
     try {
       const members = await listServerMembers(server.server_id, currentUser.userId);

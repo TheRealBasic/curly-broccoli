@@ -20,6 +20,19 @@ type AuthState = {
 
 type AuthMode = 'login' | 'register';
 
+type ModerationAuditLog = {
+  id: string;
+  serverId: string;
+  actorUserId: string;
+  actorUsername: string;
+  targetUserId: string | null;
+  targetUsername: string | null;
+  messageId: string | null;
+  action: 'message_delete' | 'message_report' | 'user_mute';
+  details: unknown;
+  createdAt: string;
+};
+
 const AUTH_STORAGE_KEY = 'curly_broccoli_auth';
 const TYPING_STOP_DELAY_MS = 1200;
 
@@ -63,6 +76,7 @@ export function App() {
   const [draft, setDraft] = useState('');
   const [systemMessage, setSystemMessage] = useState('Sign in to join chat.');
   const [error, setError] = useState<string | null>(null);
+  const [auditLogs, setAuditLogs] = useState<ModerationAuditLog[]>([]);
 
   const [servers, setServers] = useState<ServerSummary[]>([]);
   const [channels, setChannels] = useState<ChannelSummary[]>([]);
@@ -93,6 +107,8 @@ export function App() {
 
   const typingUsers = activeChannelId ? (typingByChannel[activeChannelId] ?? []) : [];
   const visibleMessages = chatMode === 'dm' ? dmMessages : messages;
+  const currentMember = members.find((member) => member.userId === auth?.user.id) ?? null;
+  const isServerOwner = currentMember?.role === 'owner';
 
   useEffect(() => {
     activeChannelRef.current = activeChannelId;
@@ -184,6 +200,16 @@ export function App() {
     setMembers(data.members);
   }
 
+  async function loadAuditLogs(serverId: string) {
+    const res = await authedFetch(`/servers/${serverId}/audit-logs?limit=20`);
+    if (!res.ok) {
+      setAuditLogs([]);
+      return;
+    }
+
+    const data = (await res.json()) as { logs: ModerationAuditLog[] };
+    setAuditLogs(data.logs);
+  }
 
   async function loadDmThreads() {
     const res = await authedFetch('/dm/threads');
@@ -214,6 +240,7 @@ export function App() {
       setActiveDmThreadId(null);
       setDmMessages([]);
       setChatMode('channel');
+      setAuditLogs([]);
       return;
     }
 
@@ -230,11 +257,13 @@ export function App() {
       return;
     }
 
-    void Promise.all([loadChannels(activeServerId), loadMembers(activeServerId)]).catch(
-      (reason: unknown) => {
-        setError(reason instanceof Error ? reason.message : 'Unable to load server data.');
-      },
-    );
+    void Promise.all([
+      loadChannels(activeServerId),
+      loadMembers(activeServerId),
+      loadAuditLogs(activeServerId),
+    ]).catch((reason: unknown) => {
+      setError(reason instanceof Error ? reason.message : 'Unable to load server data.');
+    });
   }, [auth?.user.id, activeServerId]);
 
   useEffect(() => {
@@ -405,7 +434,6 @@ export function App() {
       JSON.stringify({ type: 'presence:join-server', payload: { serverId: activeServerId } }),
     );
   }, [activeServerId, connectionState]);
-
 
   useEffect(() => {
     const socket = socketRef.current;
@@ -586,8 +614,62 @@ export function App() {
     setError(null);
   }
 
-  async function logout() {
+  async function deleteMessage(messageId: string) {
+    const res = await authedFetch(`/messages/${messageId}`, { method: 'DELETE' });
+    if (!res.ok) {
+      setError('Unable to delete message.');
+      return;
+    }
 
+    if (chatMode === 'channel') {
+      setMessages((prev) => prev.filter((message) => message.id !== messageId));
+    }
+
+    if (activeServerId) {
+      await loadAuditLogs(activeServerId);
+    }
+    setError(null);
+  }
+
+  async function reportMessage(messageId: string) {
+    const res = await authedFetch(`/messages/${messageId}/report`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    if (!res.ok) {
+      setError('Unable to report message.');
+      return;
+    }
+
+    if (activeServerId) {
+      await loadAuditLogs(activeServerId);
+    }
+    setError(null);
+  }
+
+  async function muteMember(userId: string) {
+    if (!activeServerId) {
+      return;
+    }
+
+    const res = await authedFetch(`/servers/${activeServerId}/mutes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId }),
+    });
+
+    if (!res.ok) {
+      setError('Unable to mute member.');
+      return;
+    }
+
+    await loadAuditLogs(activeServerId);
+    setError(null);
+  }
+
+  async function logout() {
     if (auth?.refreshToken) {
       await fetch(`${apiBase}/auth/logout`, {
         method: 'POST',
@@ -739,7 +821,11 @@ export function App() {
               <button
                 key={thread.id}
                 type="button"
-                className={thread.id === activeDmThreadId && chatMode === 'dm' ? 'list-item active' : 'list-item'}
+                className={
+                  thread.id === activeDmThreadId && chatMode === 'dm'
+                    ? 'list-item active'
+                    : 'list-item'
+                }
                 onClick={() => {
                   setChatMode('dm');
                   setActiveDmThreadId(thread.id);
@@ -764,9 +850,13 @@ export function App() {
 
         <section className="chat-panel">
           <section className="chat-box" aria-label="Messages">
-            {chatMode === 'channel' && !activeChannelId && <p className="empty">Pick a channel to start chatting.</p>}
+            {chatMode === 'channel' && !activeChannelId && (
+              <p className="empty">Pick a channel to start chatting.</p>
+            )}
             {chatMode === 'dm' && !activeDmThreadId && <p className="empty">Select a DM thread.</p>}
-            {((chatMode === 'channel' && activeChannelId) || (chatMode === 'dm' && activeDmThreadId)) && visibleMessages.length === 0 && <p className="empty">No messages yet.</p>}
+            {((chatMode === 'channel' && activeChannelId) ||
+              (chatMode === 'dm' && activeDmThreadId)) &&
+              visibleMessages.length === 0 && <p className="empty">No messages yet.</p>}
             {visibleMessages.map((message) => (
               <article key={message.id} className="message">
                 <header>
@@ -774,21 +864,35 @@ export function App() {
                   <time>{new Date(message.createdAt).toLocaleTimeString()}</time>
                 </header>
                 <p>{message.text}</p>
+                {'user' in message && chatMode === 'channel' && (
+                  <div className="message-actions">
+                    <button type="button" onClick={() => reportMessage(message.id)}>
+                      Report
+                    </button>
+                    {(message.userId === auth.user.id || isServerOwner) && (
+                      <button type="button" onClick={() => deleteMessage(message.id)}>
+                        Delete
+                      </button>
+                    )}
+                  </div>
+                )}
               </article>
             ))}
           </section>
 
-          {chatMode === 'channel' && <p className="typing-indicator" aria-live="polite">
-            {typingUsers.length === 1 && `${typingUsers[0].username} is typing...`}
-            {typingUsers.length > 1 &&
-              `${typingUsers
-                .slice(0, 2)
-                .map((user) => user.username)
-                .join(
-                  ', ',
-                )}${typingUsers.length > 2 ? ` +${typingUsers.length - 2} others` : ''} are typing...`}
-            {typingUsers.length === 0 && '\u00A0'}
-          </p>}
+          {chatMode === 'channel' && (
+            <p className="typing-indicator" aria-live="polite">
+              {typingUsers.length === 1 && `${typingUsers[0].username} is typing...`}
+              {typingUsers.length > 1 &&
+                `${typingUsers
+                  .slice(0, 2)
+                  .map((user) => user.username)
+                  .join(
+                    ', ',
+                  )}${typingUsers.length > 2 ? ` +${typingUsers.length - 2} others` : ''} are typing...`}
+              {typingUsers.length === 0 && '\u00A0'}
+            </p>
+          )}
 
           <form
             className="composer"
@@ -830,13 +934,25 @@ export function App() {
                 queueTypingStop();
               }}
               onBlur={() => sendTypingStop()}
-              placeholder={chatMode === 'dm' ? (activeDmThreadId ? 'Type a DM' : 'Select a DM thread') : activeChannelId ? 'Type a message' : 'Select a channel first'}
+              placeholder={
+                chatMode === 'dm'
+                  ? activeDmThreadId
+                    ? 'Type a DM'
+                    : 'Select a DM thread'
+                  : activeChannelId
+                    ? 'Type a message'
+                    : 'Select a channel first'
+              }
               aria-label="Message"
               maxLength={300}
             />
             <button
               type="submit"
-              disabled={connectionState !== 'open' || !draft.trim() || (chatMode === 'dm' ? !activeDmThreadId : !activeChannelId)}
+              disabled={
+                connectionState !== 'open' ||
+                !draft.trim() ||
+                (chatMode === 'dm' ? !activeDmThreadId : !activeChannelId)
+              }
             >
               Send
             </button>
@@ -859,10 +975,25 @@ export function App() {
                   />
                   <span>{member.username}</span>
                   <small className="subtle">{member.role}</small>
+                  {isServerOwner && member.userId !== auth.user.id && (
+                    <button type="button" onClick={() => muteMember(member.userId)}>
+                      Mute
+                    </button>
+                  )}
                 </div>
               );
             })}
             {members.length === 0 && <p className="empty">No members yet.</p>}
+          </div>
+          <h3>Audit Log</h3>
+          <div className="list">
+            {auditLogs.map((log) => (
+              <div key={log.id} className="member-row">
+                <span>{log.action}</span>
+                <small className="subtle">{log.actorUsername}</small>
+              </div>
+            ))}
+            {auditLogs.length === 0 && <p className="empty">No moderation events.</p>}
           </div>
         </aside>
       </section>

@@ -8,6 +8,7 @@ Stage-based build of a minimal Discord-like realtime chat app.
 - ✅ Stage 1 complete: realtime websocket chat.
 - ✅ Stage 2 complete: PostgreSQL persistence + migrations + history on connect.
 - ✅ Stage 6 complete: Direct Messages (DM inbox, private threads, DM chat).
+- ✅ Stage 7 complete: Moderation basics (message delete/report, server mute, audit log).
 
 ## Monorepo structure
 

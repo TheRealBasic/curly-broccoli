@@ -34,8 +34,66 @@ type RefreshTokenRecord = {
   revoked_at: Date | string | null;
 };
 
+type ModerationAuditLog = {
+  id: string;
+  serverId: string;
+  actorUserId: string;
+  actorUsername: string;
+  targetUserId: string | null;
+  targetUsername: string | null;
+  messageId: string | null;
+  action: 'message_delete' | 'message_report' | 'user_mute';
+  details: unknown;
+  createdAt: string;
+};
+
 type AppDependencies = {
   fetchRecentMessages: (channelId: string, limit?: number) => Promise<ChatMessage[]>;
+  deleteMessageById: (
+    messageId: string,
+    actorUserId: string,
+  ) => Promise<{
+    id: string;
+    channel_id: string;
+    server_id: string;
+    user_id: string | null;
+    user_name: string;
+    text: string;
+    created_at: Date | string;
+    can_delete: boolean;
+  } | null>;
+  reportMessageById: (
+    messageId: string,
+    actorUserId: string,
+  ) => Promise<{
+    id: string;
+    channel_id: string;
+    server_id: string;
+    user_id: string | null;
+    user_name: string;
+    text: string;
+    created_at: Date | string;
+  } | null>;
+  muteUserInServer: (
+    serverId: string,
+    targetUserId: string,
+    actorUserId: string,
+    reason: string | null,
+  ) => Promise<void>;
+  listModerationAuditLogs: (
+    serverId: string,
+    userId: string,
+    limit?: number,
+  ) => Promise<ModerationAuditLog[]>;
+  writeModerationAuditLog: (entry: {
+    id: string;
+    serverId: string;
+    actorUserId: string;
+    targetUserId?: string | null;
+    messageId?: string | null;
+    action: 'message_delete' | 'message_report' | 'user_mute';
+    details?: unknown;
+  }) => Promise<void>;
   findUserByUsername: (username: string) => Promise<UserRecord | null>;
   findUserById: (id: string) => Promise<UserRecord | null>;
   createUser: (id: string, username: string, passwordHash: string) => Promise<UserRecord>;
@@ -396,7 +454,6 @@ export function createApp(deps: AppDependencies) {
     }
   });
 
-
   app.get('/dm/threads', async (req, res) => {
     const auth = requireAuth(req, res);
     if (!auth) {
@@ -461,6 +518,115 @@ export function createApp(deps: AppDependencies) {
     const limit = Number.isFinite(limitRaw) ? limitRaw : undefined;
     const messages = await deps.fetchRecentDmMessages(threadId, limit);
     res.json({ messages });
+  });
+
+  app.delete('/messages/:messageId', async (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) {
+      return;
+    }
+
+    const messageId = String(req.params.messageId ?? '').trim();
+    if (!messageId) {
+      res.status(400).json({ error: 'messageId is required.' });
+      return;
+    }
+
+    const deleted = await deps.deleteMessageById(messageId, auth.userId);
+    if (!deleted) {
+      res.status(404).json({ error: 'Message not found or you cannot delete it.' });
+      return;
+    }
+
+    await deps.writeModerationAuditLog({
+      id: randomUUID(),
+      serverId: deleted.server_id,
+      actorUserId: auth.userId,
+      targetUserId: deleted.user_id,
+      messageId: deleted.id,
+      action: 'message_delete',
+      details: { channelId: deleted.channel_id },
+    });
+
+    res.status(204).send();
+  });
+
+  app.post('/messages/:messageId/report', async (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) {
+      return;
+    }
+
+    const messageId = String(req.params.messageId ?? '').trim();
+    if (!messageId) {
+      res.status(400).json({ error: 'messageId is required.' });
+      return;
+    }
+
+    const reason = String(req.body?.reason ?? '').trim() || null;
+    const reported = await deps.reportMessageById(messageId, auth.userId);
+    if (!reported) {
+      res.status(404).json({ error: 'Message not found or inaccessible.' });
+      return;
+    }
+
+    await deps.writeModerationAuditLog({
+      id: randomUUID(),
+      serverId: reported.server_id,
+      actorUserId: auth.userId,
+      targetUserId: reported.user_id,
+      messageId: reported.id,
+      action: 'message_report',
+      details: { reason },
+    });
+
+    res.status(201).json({ ok: true });
+  });
+
+  app.post('/servers/:serverId/mutes', async (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) {
+      return;
+    }
+
+    const targetUserId = String(req.body?.userId ?? '').trim();
+    const reason = String(req.body?.reason ?? '').trim() || null;
+    if (!targetUserId) {
+      res.status(400).json({ error: 'userId is required.' });
+      return;
+    }
+
+    try {
+      await deps.muteUserInServer(req.params.serverId, targetUserId, auth.userId, reason);
+      await deps.writeModerationAuditLog({
+        id: randomUUID(),
+        serverId: req.params.serverId,
+        actorUserId: auth.userId,
+        targetUserId,
+        action: 'user_mute',
+        details: { reason },
+      });
+      res.status(201).json({ ok: true });
+    } catch {
+      res.status(403).json({ error: 'Only server owners can mute members in this server.' });
+    }
+  });
+
+  app.get('/servers/:serverId/audit-logs', async (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) {
+      return;
+    }
+
+    const limitRaw = Number(req.query.limit);
+    const limit = Number.isFinite(limitRaw) ? limitRaw : undefined;
+
+    try {
+      const logs = await deps.listModerationAuditLogs(req.params.serverId, auth.userId, limit);
+      res.json({ logs });
+    } catch {
+      res.status(403).json({ error: 'Only server owners can view audit logs.' });
+    }
   });
 
   app.get('/', (_req, res) => {

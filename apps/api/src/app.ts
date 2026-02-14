@@ -160,6 +160,23 @@ type AppDependencies = {
   }>;
 };
 
+type RequestMetric = {
+  total: number;
+  byRoute: Map<string, number>;
+  byStatus: Map<string, number>;
+};
+
+function parseAllowedOrigins(raw: string | undefined) {
+  if (!raw) {
+    return [];
+  }
+
+  return raw
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0);
+}
+
 function validateAuthInput(username: string, password: string) {
   const normalizedUsername = username.trim().toLowerCase();
   const usernameValid = /^[a-z0-9_]{3,32}$/.test(normalizedUsername);
@@ -189,12 +206,109 @@ function normalizeChannelName(name: string) {
     .slice(0, 48);
 }
 
+function parsePositiveInt(value: unknown, max: number) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > max) {
+    return null;
+  }
+
+  return parsed;
+}
+
+function createRateLimiter(maxRequests: number, windowMs: number) {
+  const buckets = new Map<string, number[]>();
+
+  return function check(key: string) {
+    const now = Date.now();
+    const entries = buckets.get(key) ?? [];
+    const fresh = entries.filter((timestamp) => now - timestamp < windowMs);
+
+    if (fresh.length >= maxRequests) {
+      buckets.set(key, fresh);
+      return false;
+    }
+
+    fresh.push(now);
+    buckets.set(key, fresh);
+    return true;
+  };
+}
+
 export function createApp(deps: AppDependencies) {
   const app = express();
+  const startedAt = Date.now();
+  const metrics: RequestMetric = {
+    total: 0,
+    byRoute: new Map(),
+    byStatus: new Map(),
+  };
+
+  const allowedOrigins = parseAllowedOrigins(process.env.CORS_ALLOWED_ORIGINS);
   const uploadsDir = path.resolve(process.cwd(), 'uploads');
   const maxImageSizeBytes = 5 * 1024 * 1024;
-  app.use(cors());
-  app.use(express.json({ limit: '10mb' }));
+  const maxSearchLimit = 100;
+  const checkAuthRateLimit = createRateLimiter(
+    Number(process.env.AUTH_RATE_LIMIT_MAX ?? 20),
+    Number(process.env.AUTH_RATE_LIMIT_WINDOW_MS ?? 60_000),
+  );
+
+  app.disable('x-powered-by');
+  app.use((req, res, next) => {
+    const started = process.hrtime.bigint();
+
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+
+    res.on('finish', () => {
+      const durationMs = Number(process.hrtime.bigint() - started) / 1_000_000;
+      const route = req.route?.path
+        ? `${req.method} ${String(req.route.path)}`
+        : `${req.method} ${req.path}`;
+      const status = String(res.statusCode);
+
+      metrics.total += 1;
+      metrics.byRoute.set(route, (metrics.byRoute.get(route) ?? 0) + 1);
+      metrics.byStatus.set(status, (metrics.byStatus.get(status) ?? 0) + 1);
+
+      console.info(
+        JSON.stringify({
+          level: 'info',
+          message: 'http_request',
+          method: req.method,
+          path: req.path,
+          statusCode: res.statusCode,
+          durationMs: Number(durationMs.toFixed(2)),
+          requestId: res.getHeader('x-request-id'),
+        }),
+      );
+    });
+
+    next();
+  });
+
+  app.use((req, res, next) => {
+    res.setHeader('X-Request-Id', randomUUID());
+    next();
+  });
+
+  app.use(
+    cors({
+      origin: (origin, callback) => {
+        if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+          callback(null, true);
+          return;
+        }
+
+        callback(new Error('Origin not allowed by CORS policy.'));
+      },
+      methods: ['GET', 'POST', 'DELETE'],
+      allowedHeaders: ['Authorization', 'Content-Type'],
+      maxAge: 600,
+    }),
+  );
+
+  app.use(express.json({ limit: '1mb' }));
   app.use('/uploads', express.static(uploadsDir));
 
   function requireAuth(req: express.Request, res: express.Response) {
@@ -212,11 +326,43 @@ export function createApp(deps: AppDependencies) {
     }
   }
 
+  function enforceAuthRateLimit(req: express.Request, res: express.Response) {
+    const key = `${req.ip}:${req.path}`;
+    if (checkAuthRateLimit(key)) {
+      return true;
+    }
+
+    res.status(429).json({ error: 'Too many auth requests. Please try again shortly.' });
+    return false;
+  }
+
   app.get('/health', (_req, res) => {
     res.json({ ok: true, service: 'api' });
   });
 
+  app.get('/metrics', (_req, res) => {
+    const routeMetrics = [...metrics.byRoute.entries()].map(([route, count]) => ({ route, count }));
+    const statusMetrics = [...metrics.byStatus.entries()].map(([statusCode, count]) => ({
+      statusCode,
+      count,
+    }));
+
+    res.json({
+      ok: true,
+      uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
+      requests: {
+        total: metrics.total,
+        byRoute: routeMetrics,
+        byStatusCode: statusMetrics,
+      },
+    });
+  });
+
   app.post('/auth/register', async (req, res) => {
+    if (!enforceAuthRateLimit(req, res)) {
+      return;
+    }
+
     const username = String(req.body?.username ?? '');
     const password = String(req.body?.password ?? '');
     const validation = validateAuthInput(username, password);
@@ -258,6 +404,10 @@ export function createApp(deps: AppDependencies) {
   });
 
   app.post('/auth/login', async (req, res) => {
+    if (!enforceAuthRateLimit(req, res)) {
+      return;
+    }
+
     const username = String(req.body?.username ?? '')
       .trim()
       .toLowerCase();
@@ -296,6 +446,10 @@ export function createApp(deps: AppDependencies) {
   });
 
   app.post('/auth/refresh', async (req, res) => {
+    if (!enforceAuthRateLimit(req, res)) {
+      return;
+    }
+
     const refreshToken = String(req.body?.refreshToken ?? '');
     if (!refreshToken) {
       res.status(400).json({ error: 'Refresh token is required.' });
@@ -375,13 +529,16 @@ export function createApp(deps: AppDependencies) {
       return;
     }
 
-    const limitRaw = Number(req.query.limit);
-    const limit = Number.isFinite(limitRaw) ? limitRaw : undefined;
+    const limit =
+      req.query.limit === undefined ? undefined : parsePositiveInt(req.query.limit, maxSearchLimit);
+    if (req.query.limit !== undefined && limit === null) {
+      res.status(400).json({ error: `limit must be an integer between 1 and ${maxSearchLimit}.` });
+      return;
+    }
 
-    const messages = await deps.fetchRecentMessages(channelId, limit);
+    const messages = await deps.fetchRecentMessages(channelId, limit ?? undefined);
     res.json({ messages });
   });
-
 
   app.get('/messages/search', async (req, res) => {
     const auth = requireAuth(req, res);
@@ -402,10 +559,19 @@ export function createApp(deps: AppDependencies) {
       return;
     }
 
-    const limitRaw = Number(req.query.limit);
-    const limit = Number.isFinite(limitRaw) ? limitRaw : undefined;
-    const offsetRaw = Number(req.query.offset);
-    const offset = Number.isFinite(offsetRaw) ? offsetRaw : undefined;
+    const limit =
+      req.query.limit === undefined ? undefined : parsePositiveInt(req.query.limit, maxSearchLimit);
+    if (req.query.limit !== undefined && limit === null) {
+      res.status(400).json({ error: `limit must be an integer between 1 and ${maxSearchLimit}.` });
+      return;
+    }
+
+    const offset =
+      req.query.offset === undefined ? undefined : parsePositiveInt(req.query.offset, 1_000_000);
+    if (req.query.offset !== undefined && offset === null) {
+      res.status(400).json({ error: 'offset must be a positive integer.' });
+      return;
+    }
 
     const messages = await deps.searchChannelMessages(channelId, query, limit, offset);
     res.json({ messages });
@@ -634,12 +800,16 @@ export function createApp(deps: AppDependencies) {
       return;
     }
 
-    const limitRaw = Number(req.query.limit);
-    const limit = Number.isFinite(limitRaw) ? limitRaw : undefined;
-    const messages = await deps.fetchRecentDmMessages(threadId, limit);
+    const limit =
+      req.query.limit === undefined ? undefined : parsePositiveInt(req.query.limit, maxSearchLimit);
+    if (req.query.limit !== undefined && limit === null) {
+      res.status(400).json({ error: `limit must be an integer between 1 and ${maxSearchLimit}.` });
+      return;
+    }
+
+    const messages = await deps.fetchRecentDmMessages(threadId, limit ?? undefined);
     res.json({ messages });
   });
-
 
   app.get('/dm/messages/search', async (req, res) => {
     const auth = requireAuth(req, res);
@@ -660,10 +830,19 @@ export function createApp(deps: AppDependencies) {
       return;
     }
 
-    const limitRaw = Number(req.query.limit);
-    const limit = Number.isFinite(limitRaw) ? limitRaw : undefined;
-    const offsetRaw = Number(req.query.offset);
-    const offset = Number.isFinite(offsetRaw) ? offsetRaw : undefined;
+    const limit =
+      req.query.limit === undefined ? undefined : parsePositiveInt(req.query.limit, maxSearchLimit);
+    if (req.query.limit !== undefined && limit === null) {
+      res.status(400).json({ error: `limit must be an integer between 1 and ${maxSearchLimit}.` });
+      return;
+    }
+
+    const offset =
+      req.query.offset === undefined ? undefined : parsePositiveInt(req.query.offset, 1_000_000);
+    if (req.query.offset !== undefined && offset === null) {
+      res.status(400).json({ error: 'offset must be a positive integer.' });
+      return;
+    }
 
     const messages = await deps.searchDmMessages(threadId, query, limit, offset);
     res.json({ messages });
@@ -767,8 +946,12 @@ export function createApp(deps: AppDependencies) {
       return;
     }
 
-    const limitRaw = Number(req.query.limit);
-    const limit = Number.isFinite(limitRaw) ? limitRaw : undefined;
+    const limit =
+      req.query.limit === undefined ? undefined : parsePositiveInt(req.query.limit, maxSearchLimit);
+    if (req.query.limit !== undefined && limit === null) {
+      res.status(400).json({ error: `limit must be an integer between 1 and ${maxSearchLimit}.` });
+      return;
+    }
 
     try {
       const logs = await deps.listModerationAuditLogs(req.params.serverId, auth.userId, limit);

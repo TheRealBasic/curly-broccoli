@@ -30,7 +30,9 @@ const baseDeps = {
   createOrGetDmThread: vi.fn<() => Promise<string>>().mockResolvedValue('thread-1'),
   listDmThreadsForUser: vi.fn<() => Promise<DmThreadSummary[]>>().mockResolvedValue([]),
   fetchRecentDmMessages: vi.fn<() => Promise<DmMessage[]>>().mockResolvedValue([]),
-  searchChannelMessages: vi.fn<(channelId: string) => Promise<ChatMessage[]>>().mockResolvedValue([]),
+  searchChannelMessages: vi
+    .fn<(channelId: string) => Promise<ChatMessage[]>>()
+    .mockResolvedValue([]),
   searchDmMessages: vi.fn<(threadId: string) => Promise<DmMessage[]>>().mockResolvedValue([]),
   canAccessDmThread: vi.fn<() => Promise<boolean>>().mockResolvedValue(true),
   canAccessChannel: vi.fn<() => Promise<boolean>>().mockResolvedValue(true),
@@ -50,6 +52,20 @@ describe('GET /health', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ ok: true, service: 'api' });
+  });
+});
+
+describe('GET /metrics', () => {
+  it('returns basic uptime and request counters', async () => {
+    const { createApp } = await import('../src/app.js');
+    const app = createApp(baseDeps);
+
+    await request(app).get('/health');
+    const metricsRes = await request(app).get('/metrics');
+
+    expect(metricsRes.status).toBe(200);
+    expect(metricsRes.body.ok).toBe(true);
+    expect(metricsRes.body.requests.total).toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -100,5 +116,31 @@ describe('POST /auth/register and /auth/login', () => {
       .send({ username: 'missing', password: 'password123' });
 
     expect(res.status).toBe(401);
+  });
+
+  it('rate limits repeated auth attempts', async () => {
+    const previousMax = process.env.AUTH_RATE_LIMIT_MAX;
+    const previousWindow = process.env.AUTH_RATE_LIMIT_WINDOW_MS;
+    process.env.AUTH_RATE_LIMIT_MAX = '1';
+    process.env.AUTH_RATE_LIMIT_WINDOW_MS = '60000';
+
+    try {
+      const { createApp } = await import('../src/app.js');
+      const findUserByUsername = vi.fn().mockResolvedValue(null);
+      const app = createApp({ ...baseDeps, findUserByUsername });
+
+      const first = await request(app)
+        .post('/auth/login')
+        .send({ username: 'missing', password: 'password123' });
+      const second = await request(app)
+        .post('/auth/login')
+        .send({ username: 'missing', password: 'password123' });
+
+      expect(first.status).toBe(401);
+      expect(second.status).toBe(429);
+    } finally {
+      process.env.AUTH_RATE_LIMIT_MAX = previousMax;
+      process.env.AUTH_RATE_LIMIT_WINDOW_MS = previousWindow;
+    }
   });
 });

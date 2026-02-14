@@ -227,6 +227,15 @@ function parsePositiveInt(value: unknown, max: number) {
   return parsed;
 }
 
+function parseNonNegativeInt(value: unknown, max: number) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > max) {
+    return null;
+  }
+
+  return parsed;
+}
+
 function createRateLimiter(maxRequests: number, windowMs: number) {
   const buckets = new Map<string, number[]>();
 
@@ -541,6 +550,12 @@ export function createApp(deps: AppDependencies) {
       return;
     }
 
+    const allowed = await deps.canAccessChannel(channelId, auth.userId);
+    if (!allowed) {
+      res.status(403).json({ error: 'You cannot access this channel.' });
+      return;
+    }
+
     const limit =
       req.query.limit === undefined ? undefined : parsePositiveInt(req.query.limit, maxSearchLimit);
     if (req.query.limit !== undefined && limit === null) {
@@ -579,9 +594,9 @@ export function createApp(deps: AppDependencies) {
     }
 
     const offset =
-      req.query.offset === undefined ? undefined : parsePositiveInt(req.query.offset, 1_000_000);
+      req.query.offset === undefined ? undefined : parseNonNegativeInt(req.query.offset, 1_000_000);
     if (req.query.offset !== undefined && offset === null) {
-      res.status(400).json({ error: 'offset must be a positive integer.' });
+      res.status(400).json({ error: 'offset must be a non-negative integer.' });
       return;
     }
 
@@ -850,9 +865,9 @@ export function createApp(deps: AppDependencies) {
     }
 
     const offset =
-      req.query.offset === undefined ? undefined : parsePositiveInt(req.query.offset, 1_000_000);
+      req.query.offset === undefined ? undefined : parseNonNegativeInt(req.query.offset, 1_000_000);
     if (req.query.offset !== undefined && offset === null) {
-      res.status(400).json({ error: 'offset must be a positive integer.' });
+      res.status(400).json({ error: 'offset must be a non-negative integer.' });
       return;
     }
 

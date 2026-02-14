@@ -163,6 +163,24 @@ describe('API permission checks', () => {
     expect(res.status).toBe(403);
   });
 
+  it('allows channel history when user can access channel', async () => {
+    const { createApp } = await import('../src/app.js');
+    const fetchRecentMessages = vi.fn<(channelId: string) => Promise<ChatMessage[]>>().mockResolvedValue([]);
+    const app = createApp({
+      ...baseDeps,
+      fetchRecentMessages,
+      canAccessChannel: vi.fn<() => Promise<boolean>>().mockResolvedValue(true),
+    });
+
+    const token = createAccessToken({ id: 'user-1', username: 'alice' });
+    const res = await request(app)
+      .get('/messages?channelId=channel-1')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(fetchRecentMessages).toHaveBeenCalledWith('channel-1', undefined);
+  });
+
   it('blocks image uploads when user cannot access channel', async () => {
     const { createApp } = await import('../src/app.js');
     const app = createApp({
@@ -182,5 +200,24 @@ describe('API permission checks', () => {
       });
 
     expect(res.status).toBe(403);
+  });
+
+  it('accepts offset=0 for channel search pagination', async () => {
+    const { createApp } = await import('../src/app.js');
+    const searchChannelMessages = vi
+      .fn<(channelId: string, query: string, limit?: number, offset?: number) => Promise<ChatMessage[]>>()
+      .mockResolvedValue([]);
+    const app = createApp({
+      ...baseDeps,
+      searchChannelMessages,
+    });
+
+    const token = createAccessToken({ id: 'user-1', username: 'alice' });
+    const res = await request(app)
+      .get('/messages/search?channelId=channel-1&query=test&offset=0')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(searchChannelMessages).toHaveBeenCalledWith('channel-1', 'test', undefined, 0);
   });
 });

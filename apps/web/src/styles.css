@@ -1,5 +1,11 @@
 :root {
-  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  font-family:
+    Inter,
+    system-ui,
+    -apple-system,
+    Segoe UI,
+    Roboto,
+    sans-serif;
   line-height: 1.5;
   color: #111827;
   background: #f3f4f6;
@@ -47,7 +53,7 @@ h1 {
 .guild-shell {
   margin-top: 1rem;
   display: grid;
-  grid-template-columns: 220px 220px minmax(0, 1fr);
+  grid-template-columns: 220px 220px minmax(0, 1fr) 220px;
   gap: 0.75rem;
 }
 
@@ -191,4 +197,44 @@ h1 {
 .error {
   color: #b91c1c;
   margin-top: 0.5rem;
+}
+
+.typing-indicator {
+  min-height: 1.25rem;
+  color: #4b5563;
+  margin: 0.45rem 0 0;
+  font-size: 0.92rem;
+}
+
+.members-list {
+  max-height: 420px;
+}
+
+.member-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.4rem;
+  padding: 0.35rem 0.45rem;
+}
+
+.member-row .subtle {
+  margin-left: auto;
+  text-transform: capitalize;
+}
+
+.presence-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 999px;
+  display: inline-block;
+}
+
+.presence-dot.online {
+  background: #10b981;
+}
+
+.presence-dot.offline {
+  background: #9ca3af;
 }

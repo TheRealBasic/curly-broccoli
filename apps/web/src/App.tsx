@@ -1,5 +1,12 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
-import { APP_NAME, type ChannelSummary, type ChatMessage, type ServerEvent, type ServerSummary } from '@curly-broccoli/shared';
+import {
+  APP_NAME,
+  type ChannelSummary,
+  type ChatMessage,
+  type ServerEvent,
+  type ServerMember,
+  type ServerSummary,
+} from '@curly-broccoli/shared';
 
 type ConnectionState = 'connecting' | 'open' | 'closed';
 
@@ -12,6 +19,7 @@ type AuthState = {
 type AuthMode = 'login' | 'register';
 
 const AUTH_STORAGE_KEY = 'curly_broccoli_auth';
+const TYPING_STOP_DELAY_MS = 1200;
 
 function loadAuthState() {
   const raw = localStorage.getItem(AUTH_STORAGE_KEY);
@@ -39,6 +47,9 @@ function saveAuthState(value: AuthState | null) {
 export function App() {
   const apiBase = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:4000';
   const socketRef = useRef<WebSocket | null>(null);
+  const typingTimeoutRef = useRef<number | null>(null);
+  const isTypingRef = useRef(false);
+  const activeChannelRef = useRef<string | null>(null);
 
   const [auth, setAuth] = useState<AuthState | null>(() => loadAuthState());
   const [authMode, setAuthMode] = useState<AuthMode>('login');
@@ -52,6 +63,11 @@ export function App() {
 
   const [servers, setServers] = useState<ServerSummary[]>([]);
   const [channels, setChannels] = useState<ChannelSummary[]>([]);
+  const [members, setMembers] = useState<ServerMember[]>([]);
+  const [onlineUserIdsByServer, setOnlineUserIdsByServer] = useState<Record<string, string[]>>({});
+  const [typingByChannel, setTypingByChannel] = useState<
+    Record<string, { userId: string; username: string }[]>
+  >({});
   const [activeServerId, setActiveServerId] = useState<string | null>(null);
   const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
   const [serverNameInput, setServerNameInput] = useState('');
@@ -67,9 +83,46 @@ export function App() {
     return `${base}/?token=${encodeURIComponent(auth.accessToken)}`;
   }, [apiBase, auth?.accessToken]);
 
+  const typingUsers = activeChannelId ? (typingByChannel[activeChannelId] ?? []) : [];
+
+  useEffect(() => {
+    activeChannelRef.current = activeChannelId;
+  }, [activeChannelId]);
+
   function updateAuth(next: AuthState | null) {
     setAuth(next);
     saveAuthState(next);
+  }
+
+  function sendTypingStop(channelId?: string) {
+    const socket = socketRef.current;
+    const targetChannelId = channelId ?? activeChannelId;
+    if (
+      !socket ||
+      socket.readyState !== WebSocket.OPEN ||
+      !targetChannelId ||
+      !isTypingRef.current
+    ) {
+      return;
+    }
+
+    socket.send(JSON.stringify({ type: 'typing:stop', payload: { channelId: targetChannelId } }));
+    isTypingRef.current = false;
+
+    if (typingTimeoutRef.current) {
+      window.clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = null;
+    }
+  }
+
+  function queueTypingStop() {
+    if (typingTimeoutRef.current) {
+      window.clearTimeout(typingTimeoutRef.current);
+    }
+
+    typingTimeoutRef.current = window.setTimeout(() => {
+      sendTypingStop();
+    }, TYPING_STOP_DELAY_MS);
   }
 
   async function authedFetch(path: string, init?: RequestInit) {
@@ -108,12 +161,25 @@ export function App() {
     }
   }
 
+  async function loadMembers(serverId: string) {
+    const res = await authedFetch(`/servers/${serverId}/members`);
+    if (!res.ok) {
+      throw new Error('Unable to load members.');
+    }
+
+    const data = (await res.json()) as { members: ServerMember[] };
+    setMembers(data.members);
+  }
+
   useEffect(() => {
     if (!auth) {
       setConnectionState('closed');
       setMessages([]);
       setServers([]);
       setChannels([]);
+      setMembers([]);
+      setOnlineUserIdsByServer({});
+      setTypingByChannel({});
       setActiveServerId(null);
       setActiveChannelId(null);
       setSystemMessage('Sign in to join chat.');
@@ -128,13 +194,16 @@ export function App() {
   useEffect(() => {
     if (!auth || !activeServerId) {
       setChannels([]);
+      setMembers([]);
       setActiveChannelId(null);
       return;
     }
 
-    void loadChannels(activeServerId).catch((reason: unknown) => {
-      setError(reason instanceof Error ? reason.message : 'Unable to load channels.');
-    });
+    void Promise.all([loadChannels(activeServerId), loadMembers(activeServerId)]).catch(
+      (reason: unknown) => {
+        setError(reason instanceof Error ? reason.message : 'Unable to load server data.');
+      },
+    );
   }, [auth?.user.id, activeServerId]);
 
   useEffect(() => {
@@ -149,6 +218,11 @@ export function App() {
     socket.addEventListener('open', () => {
       setConnectionState('open');
       setError(null);
+      if (activeServerId) {
+        socket.send(
+          JSON.stringify({ type: 'presence:join-server', payload: { serverId: activeServerId } }),
+        );
+      }
     });
 
     socket.addEventListener('message', (event) => {
@@ -162,15 +236,69 @@ export function App() {
       }
 
       if (parsed.type === 'chat:history') {
-        if (parsed.payload.channelId === activeChannelId) {
+        if (parsed.payload.channelId === activeChannelRef.current) {
           setMessages(parsed.payload.messages);
         }
       }
 
       if (parsed.type === 'chat:message') {
-        if (parsed.payload.message.channelId === activeChannelId) {
+        if (parsed.payload.message.channelId === activeChannelRef.current) {
           setMessages((prev) => [...prev, parsed.payload.message]);
         }
+      }
+
+      if (parsed.type === 'presence:sync') {
+        setOnlineUserIdsByServer((prev) => ({
+          ...prev,
+          [parsed.payload.serverId]: parsed.payload.onlineUserIds,
+        }));
+      }
+
+      if (parsed.type === 'presence:user-online') {
+        setOnlineUserIdsByServer((prev) => {
+          const existing = new Set(prev[parsed.payload.serverId] ?? []);
+          existing.add(parsed.payload.userId);
+          return { ...prev, [parsed.payload.serverId]: Array.from(existing) };
+        });
+      }
+
+      if (parsed.type === 'presence:user-offline') {
+        setOnlineUserIdsByServer((prev) => ({
+          ...prev,
+          [parsed.payload.serverId]: (prev[parsed.payload.serverId] ?? []).filter(
+            (userId) => userId !== parsed.payload.userId,
+          ),
+        }));
+      }
+
+      if (parsed.type === 'typing:start') {
+        if (parsed.payload.userId === auth.user.id) {
+          return;
+        }
+
+        setTypingByChannel((prev) => {
+          const current = prev[parsed.payload.channelId] ?? [];
+          if (current.some((item) => item.userId === parsed.payload.userId)) {
+            return prev;
+          }
+
+          return {
+            ...prev,
+            [parsed.payload.channelId]: [
+              ...current,
+              { userId: parsed.payload.userId, username: parsed.payload.username },
+            ],
+          };
+        });
+      }
+
+      if (parsed.type === 'typing:stop') {
+        setTypingByChannel((prev) => ({
+          ...prev,
+          [parsed.payload.channelId]: (prev[parsed.payload.channelId] ?? []).filter(
+            (item) => item.userId !== parsed.payload.userId,
+          ),
+        }));
       }
 
       if (parsed.type === 'system') {
@@ -188,6 +316,7 @@ export function App() {
     });
 
     return () => {
+      sendTypingStop();
       socket.close();
       socketRef.current = null;
     };
@@ -203,10 +332,21 @@ export function App() {
     socket.send(
       JSON.stringify({
         type: 'chat:join-channel',
-        payload: { channelId: activeChannelId }
-      })
+        payload: { channelId: activeChannelId },
+      }),
     );
   }, [activeChannelId, connectionState]);
+
+  useEffect(() => {
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN || !activeServerId) {
+      return;
+    }
+
+    socket.send(
+      JSON.stringify({ type: 'presence:join-server', payload: { serverId: activeServerId } }),
+    );
+  }, [activeServerId, connectionState]);
 
   function sendMessage() {
     const socket = socketRef.current;
@@ -215,11 +355,12 @@ export function App() {
       return;
     }
 
+    sendTypingStop(activeChannelId);
     socket.send(
       JSON.stringify({
         type: 'chat:send',
-        payload: { text }
-      })
+        payload: { text },
+      }),
     );
     setDraft('');
     setError(null);
@@ -232,7 +373,7 @@ export function App() {
     const res = await fetch(`${apiBase}${endpoint}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: usernameInput, password: passwordInput })
+      body: JSON.stringify({ username: usernameInput, password: passwordInput }),
     });
 
     const data = (await res.json()) as
@@ -250,7 +391,7 @@ export function App() {
     updateAuth({
       user: data.user,
       accessToken: data.tokens.accessToken,
-      refreshToken: data.tokens.refreshToken
+      refreshToken: data.tokens.refreshToken,
     });
 
     setUsernameInput('');
@@ -268,7 +409,7 @@ export function App() {
     const res = await authedFetch('/servers', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name })
+      body: JSON.stringify({ name }),
     });
 
     if (!res.ok) {
@@ -290,7 +431,7 @@ export function App() {
     const res = await authedFetch(`/servers/${activeServerId}/channels`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name })
+      body: JSON.stringify({ name }),
     });
 
     if (!res.ok) {
@@ -312,7 +453,7 @@ export function App() {
     const res = await authedFetch(`/servers/${activeServerId}/members`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username })
+      body: JSON.stringify({ username }),
     });
 
     if (!res.ok) {
@@ -321,6 +462,7 @@ export function App() {
     }
 
     setInviteUsernameInput('');
+    await loadMembers(activeServerId);
     setError(null);
   }
 
@@ -329,10 +471,11 @@ export function App() {
       await fetch(`${apiBase}/auth/logout`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refreshToken: auth.refreshToken })
+        body: JSON.stringify({ refreshToken: auth.refreshToken }),
       });
     }
 
+    sendTypingStop();
     socketRef.current?.close();
     updateAuth(null);
   }
@@ -395,7 +538,9 @@ export function App() {
       <header className="chat-header">
         <div>
           <h1>{APP_NAME}</h1>
-          <p className="subtle">Signed in as <strong>{auth.user.username}</strong></p>
+          <p className="subtle">
+            Signed in as <strong>{auth.user.username}</strong>
+          </p>
           <p className="subtle">
             Status: <strong>{connectionState}</strong> · {systemMessage}
           </p>
@@ -450,7 +595,9 @@ export function App() {
               onChange={(event) => setChannelNameInput(event.target.value)}
               placeholder="New channel"
             />
-            <button type="submit" disabled={!activeServerId}>Add</button>
+            <button type="submit" disabled={!activeServerId}>
+              Add
+            </button>
           </form>
           <form className="inline-form" onSubmit={addMember}>
             <input
@@ -458,7 +605,9 @@ export function App() {
               onChange={(event) => setInviteUsernameInput(event.target.value)}
               placeholder="Invite username"
             />
-            <button type="submit" disabled={!activeServerId}>Invite</button>
+            <button type="submit" disabled={!activeServerId}>
+              Invite
+            </button>
           </form>
         </aside>
 
@@ -477,6 +626,18 @@ export function App() {
             ))}
           </section>
 
+          <p className="typing-indicator" aria-live="polite">
+            {typingUsers.length === 1 && `${typingUsers[0].username} is typing...`}
+            {typingUsers.length > 1 &&
+              `${typingUsers
+                .slice(0, 2)
+                .map((user) => user.username)
+                .join(
+                  ', ',
+                )}${typingUsers.length > 2 ? ` +${typingUsers.length - 2} others` : ''} are typing...`}
+            {typingUsers.length === 0 && '\u00A0'}
+          </p>
+
           <form
             className="composer"
             onSubmit={(event) => {
@@ -486,16 +647,68 @@ export function App() {
           >
             <input
               value={draft}
-              onChange={(event) => setDraft(event.target.value)}
+              onChange={(event) => {
+                const nextValue = event.target.value;
+                setDraft(nextValue);
+
+                const socket = socketRef.current;
+                if (!socket || socket.readyState !== WebSocket.OPEN || !activeChannelId) {
+                  return;
+                }
+
+                if (!nextValue.trim()) {
+                  sendTypingStop(activeChannelId);
+                  return;
+                }
+
+                if (!isTypingRef.current) {
+                  socket.send(
+                    JSON.stringify({
+                      type: 'typing:start',
+                      payload: { channelId: activeChannelId },
+                    }),
+                  );
+                  isTypingRef.current = true;
+                }
+
+                queueTypingStop();
+              }}
+              onBlur={() => sendTypingStop()}
               placeholder={activeChannelId ? 'Type a message' : 'Select a channel first'}
               aria-label="Message"
               maxLength={300}
             />
-            <button type="submit" disabled={connectionState !== 'open' || !draft.trim() || !activeChannelId}>
+            <button
+              type="submit"
+              disabled={connectionState !== 'open' || !draft.trim() || !activeChannelId}
+            >
               Send
             </button>
           </form>
         </section>
+
+        <aside className="sidebar">
+          <h3>Members</h3>
+          <div className="list members-list">
+            {members.map((member) => {
+              const isOnline = Boolean(
+                activeServerId &&
+                (onlineUserIdsByServer[activeServerId] ?? []).includes(member.userId),
+              );
+              return (
+                <div key={member.userId} className="member-row">
+                  <span
+                    className={isOnline ? 'presence-dot online' : 'presence-dot offline'}
+                    aria-hidden="true"
+                  />
+                  <span>{member.username}</span>
+                  <small className="subtle">{member.role}</small>
+                </div>
+              );
+            })}
+            {members.length === 0 && <p className="empty">No members yet.</p>}
+          </div>
+        </aside>
       </section>
 
       {error && <p className="error">{error}</p>}

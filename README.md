@@ -110,6 +110,77 @@ Primary env vars used by the stack (see `.env.example`):
 - `POSTGRES_USER`
 - `POSTGRES_PASSWORD`
 
+## Troubleshooting
+
+If setup or runtime fails, use the checks below.
+
+### Containers won’t start (`docker compose up --build` fails)
+
+- Verify Docker is running: `docker info`
+- Rebuild from scratch if cached layers are stale:
+
+```bash
+docker compose down -v
+docker compose up --build
+```
+
+- Check service logs for the first error:
+
+```bash
+docker compose logs api
+docker compose logs web
+docker compose logs postgres
+```
+
+### Ports already in use (`EADDRINUSE` / bind errors)
+
+- Typical conflicts are `5173` (web), `4000` (api), and `5432` (postgres).
+- Stop the conflicting process or override ports in `.env` (`WEB_PORT`, `API_PORT`) and restart.
+
+### Database connection failures (`ECONNREFUSED`, auth errors)
+
+- Ensure Postgres is healthy and reachable at the host/port in `DATABASE_URL`.
+- Confirm `.env` credentials match Postgres (`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`).
+- If schema is out of date, restart API to re-run migrations.
+
+### App boots but login/API calls fail (401/403/CORS)
+
+- Confirm `JWT_SECRET` is set and consistent for API restarts.
+- Verify `VITE_API_BASE_URL` points to the running API.
+- Check `CORS_ALLOWED_ORIGINS` includes your web origin (for local dev usually `http://localhost:5173`).
+
+### WebSocket disconnects or no live updates
+
+- Open browser devtools and check failed WS requests.
+- Confirm API is reachable and not crashing (`/health` should return 200).
+- If behind a proxy, ensure it supports WebSocket upgrades.
+
+### pnpm install/dev issues
+
+- Validate tool versions:
+
+```bash
+node -v
+pnpm -v
+```
+
+- Use Node 20+ and pnpm 9+ (per prerequisites).
+- If lockfile/store corruption is suspected:
+
+```bash
+pnpm store prune
+pnpm install
+```
+
+### Quick health checks
+
+```bash
+curl http://localhost:4000/health
+curl http://localhost:4000/metrics
+```
+
+If problems persist, attach relevant `docker compose logs` output and your `.env` (with secrets redacted) when reporting the issue.
+
 ## Deployment
 
 For production-like Compose usage and release checklist, see [`DEPLOYMENT.md`](./DEPLOYMENT.md).

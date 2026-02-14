@@ -2,7 +2,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import http from 'node:http';
 import type net from 'node:net';
 import dotenv from 'dotenv';
-import { type ChatMessage, type ClientEvent, type ServerEvent } from '@curly-broccoli/shared';
+import {
+  type ChatMessage,
+  type ClientEvent,
+  type DmMessage,
+  type ServerEvent,
+} from '@curly-broccoli/shared';
 import { createApp } from './app.js';
 import { verifyAccessToken } from './auth.js';
 import {
@@ -10,9 +15,12 @@ import {
   addServerMembership,
   chatHistoryLimit,
   canAccessChannel,
+  canAccessDmThread,
   createChannel,
+  createOrGetDmThread,
   createServer,
   createUser,
+  fetchRecentDmMessages,
   fetchRecentMessages,
   findRefreshToken,
   findUserById,
@@ -20,9 +28,11 @@ import {
   isMemberOfServer,
   listChannelsForServer,
   listServerMembers,
+  listDmThreadsForUser,
   listServersForUser,
   revokeRefreshToken,
   runMigrations,
+  saveDmMessage,
   saveMessage,
   storeRefreshToken,
 } from './db.js';
@@ -46,6 +56,10 @@ const app = createApp({
   createChannel,
   addMemberByUsername,
   listServerMembers,
+  createOrGetDmThread,
+  listDmThreadsForUser,
+  fetchRecentDmMessages,
+  canAccessDmThread,
 });
 const server = http.createServer(app);
 
@@ -54,6 +68,9 @@ const RATE_LIMIT_MAX_MESSAGES = 6;
 const clients = new Set<net.Socket>();
 const userByConnection = new Map<net.Socket, { userId: string; username: string }>();
 const activeChannelByConnection = new Map<net.Socket, string>();
+
+const activeDmThreadByConnection = new Map<net.Socket, string>();
+const dmConnectionsByThread = new Map<string, Set<net.Socket>>();
 const sentTimestampsByConnection = new Map<net.Socket, number[]>();
 const readBufferByConnection = new Map<net.Socket, Buffer>();
 const serversByConnection = new Map<net.Socket, Set<string>>();
@@ -142,6 +159,14 @@ function broadcastToChannel(channelId: string, event: ServerEvent) {
     if (activeChannelByConnection.get(client) === channelId) {
       client.write(frame);
     }
+  }
+}
+
+
+function broadcastToDmThread(threadId: string, event: ServerEvent) {
+  const frame = encodeFrame(JSON.stringify(event));
+  for (const socket of dmConnectionsByThread.get(threadId) ?? []) {
+    socket.write(frame);
   }
 }
 
@@ -279,6 +304,15 @@ function closeConnection(socket: net.Socket) {
   clients.delete(socket);
   userByConnection.delete(socket);
   activeChannelByConnection.delete(socket);
+  const activeDmThreadId = activeDmThreadByConnection.get(socket);
+  if (activeDmThreadId) {
+    const sockets = dmConnectionsByThread.get(activeDmThreadId);
+    sockets?.delete(socket);
+    if (sockets && sockets.size === 0) {
+      dmConnectionsByThread.delete(activeDmThreadId);
+    }
+  }
+  activeDmThreadByConnection.delete(socket);
   sentTimestampsByConnection.delete(socket);
   readBufferByConnection.delete(socket);
   serversByConnection.delete(socket);
@@ -311,6 +345,47 @@ async function handleJoinChannel(socket: net.Socket, channelId: string) {
     sendEvent(socket, {
       type: 'error',
       payload: { message: 'Unable to load message history.' },
+    });
+  }
+}
+
+
+async function handleJoinDmThread(socket: net.Socket, threadId: string) {
+  const authUser = userByConnection.get(socket);
+  if (!authUser) {
+    sendEvent(socket, { type: 'error', payload: { message: 'Unauthorized connection.' } });
+    return;
+  }
+
+  const allowed = await canAccessDmThread(threadId, authUser.userId);
+  if (!allowed) {
+    sendEvent(socket, { type: 'error', payload: { message: 'You cannot join this DM thread.' } });
+    return;
+  }
+
+  const previousThreadId = activeDmThreadByConnection.get(socket);
+  if (previousThreadId && previousThreadId !== threadId) {
+    const previousSockets = dmConnectionsByThread.get(previousThreadId);
+    previousSockets?.delete(socket);
+    if (previousSockets && previousSockets.size === 0) {
+      dmConnectionsByThread.delete(previousThreadId);
+    }
+  }
+
+  activeDmThreadByConnection.set(socket, threadId);
+  const sockets = dmConnectionsByThread.get(threadId) ?? new Set<net.Socket>();
+  sockets.add(socket);
+  dmConnectionsByThread.set(threadId, sockets);
+
+  sendEvent(socket, { type: 'dm:joined-thread', payload: { threadId } });
+
+  try {
+    const messages = await fetchRecentDmMessages(threadId, chatHistoryLimit);
+    sendEvent(socket, { type: 'dm:history', payload: { threadId, messages } });
+  } catch {
+    sendEvent(socket, {
+      type: 'error',
+      payload: { message: 'Unable to load DM history.' },
     });
   }
 }
@@ -425,6 +500,70 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
     }
 
     await handleJoinChannel(socket, channelId);
+    return;
+  }
+
+  if (event.type === 'dm:join-thread') {
+    const threadId = event.payload?.threadId?.trim();
+    if (!threadId) {
+      sendEvent(socket, { type: 'error', payload: { message: 'threadId is required.' } });
+      return;
+    }
+
+    await handleJoinDmThread(socket, threadId);
+    return;
+  }
+
+  if (event.type === 'dm:send') {
+    const text = event.payload?.text?.trim();
+    if (!text) {
+      sendEvent(socket, {
+        type: 'error',
+        payload: { message: 'Message cannot be empty.' },
+      });
+      return;
+    }
+
+    if (isRateLimited(socket)) {
+      sendEvent(socket, {
+        type: 'error',
+        payload: { message: 'Rate limit exceeded. Slow down a bit.' },
+      });
+      return;
+    }
+
+    const threadId = activeDmThreadByConnection.get(socket);
+    if (!threadId) {
+      sendEvent(socket, {
+        type: 'error',
+        payload: { message: 'Join a DM thread before sending messages.' },
+      });
+      return;
+    }
+
+    const currentUser = userByConnection.get(socket);
+    const messageToSave: DmMessage = {
+      id: randomUUID(),
+      threadId,
+      senderUserId: currentUser?.userId ?? '',
+      senderUsername: currentUser?.username ?? 'Anonymous',
+      text,
+      createdAt: new Date().toISOString(),
+    };
+
+    try {
+      const message = await saveDmMessage(messageToSave);
+      broadcastToDmThread(threadId, {
+        type: 'dm:message',
+        payload: { message },
+      });
+    } catch {
+      sendEvent(socket, {
+        type: 'error',
+        payload: { message: 'Unable to save your DM right now.' },
+      });
+    }
+
     return;
   }
 

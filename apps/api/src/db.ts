@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -5,6 +6,8 @@ import { Pool } from 'pg';
 import type {
   ChannelSummary,
   ChatMessage,
+  DmMessage,
+  DmThreadSummary,
   ServerMember,
   ServerSummary,
 } from '@curly-broccoli/shared';
@@ -63,11 +66,51 @@ type ServerMembershipRow = {
   role: 'owner' | 'member';
 };
 
+
+type DmThreadRow = {
+  id: string;
+  user_a_id: string;
+  user_b_id: string;
+  other_user_id: string;
+  other_username: string;
+  last_message_at: Date | string | null;
+};
+
+type DmMessageRow = {
+  id: string;
+  thread_id: string;
+  sender_user_id: string;
+  sender_username: string;
+  text: string;
+  created_at: Date | string;
+};
+
 function mapRow(row: ChatMessageRow): ChatMessage {
   return {
     id: row.id,
     channelId: row.channel_id,
     user: row.user_name,
+    text: row.text,
+    createdAt: new Date(row.created_at).toISOString(),
+  };
+}
+
+
+function mapDmThreadRow(row: DmThreadRow): DmThreadSummary {
+  return {
+    id: row.id,
+    otherUserId: row.other_user_id,
+    otherUsername: row.other_username,
+    lastMessageAt: row.last_message_at ? new Date(row.last_message_at).toISOString() : null,
+  };
+}
+
+function mapDmMessageRow(row: DmMessageRow): DmMessage {
+  return {
+    id: row.id,
+    threadId: row.thread_id,
+    senderUserId: row.sender_user_id,
+    senderUsername: row.sender_username,
     text: row.text,
     createdAt: new Date(row.created_at).toISOString(),
   };
@@ -392,4 +435,108 @@ export async function fetchRecentMessages(channelId: string, limit = chatHistory
 
 export async function closeDb() {
   await pool.end();
+}
+
+
+export async function createOrGetDmThread(userAId: string, userBId: string) {
+  if (userAId === userBId) {
+    throw new Error('Cannot create DM with self');
+  }
+
+  const result = await pool.query<{ id: string }>(
+    `
+      INSERT INTO dm_threads (id, user_a_id, user_b_id)
+      VALUES ($1, LEAST($2::uuid, $3::uuid), GREATEST($2::uuid, $3::uuid))
+      ON CONFLICT ((LEAST(user_a_id, user_b_id)), (GREATEST(user_a_id, user_b_id))) DO UPDATE
+      SET user_a_id = dm_threads.user_a_id
+      RETURNING id;
+    `,
+    [crypto.randomUUID(), userAId, userBId],
+  );
+
+  return result.rows[0].id;
+}
+
+export async function listDmThreadsForUser(userId: string) {
+  const result = await pool.query<DmThreadRow>(
+    `
+      SELECT
+        t.id,
+        t.user_a_id,
+        t.user_b_id,
+        CASE WHEN t.user_a_id = $1 THEN t.user_b_id ELSE t.user_a_id END AS other_user_id,
+        other_user.username AS other_username,
+        MAX(m.created_at) AS last_message_at
+      FROM dm_threads t
+      INNER JOIN users other_user
+        ON other_user.id = CASE WHEN t.user_a_id = $1 THEN t.user_b_id ELSE t.user_a_id END
+      LEFT JOIN dm_messages m ON m.thread_id = t.id
+      WHERE t.user_a_id = $1 OR t.user_b_id = $1
+      GROUP BY t.id, t.user_a_id, t.user_b_id, other_user.id, other_user.username
+      ORDER BY COALESCE(MAX(m.created_at), t.created_at) DESC;
+    `,
+    [userId],
+  );
+
+  return result.rows.map(mapDmThreadRow);
+}
+
+export async function canAccessDmThread(threadId: string, userId: string) {
+  const result = await pool.query<{ found: number }>(
+    `
+      SELECT 1 AS found
+      FROM dm_threads
+      WHERE id = $1 AND (user_a_id = $2 OR user_b_id = $2);
+    `,
+    [threadId, userId],
+  );
+
+  return Boolean(result.rowCount);
+}
+
+export async function saveDmMessage(message: DmMessage) {
+  const inserted = await pool.query<DmMessageRow>(
+    `
+      WITH inserted AS (
+        INSERT INTO dm_messages (id, thread_id, sender_user_id, text, created_at)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id, thread_id, sender_user_id, text, created_at
+      )
+      SELECT
+        inserted.id,
+        inserted.thread_id,
+        inserted.sender_user_id,
+        users.username AS sender_username,
+        inserted.text,
+        inserted.created_at
+      FROM inserted
+      INNER JOIN users ON users.id = inserted.sender_user_id;
+    `,
+    [message.id, message.threadId, message.senderUserId, message.text, message.createdAt],
+  );
+
+  return mapDmMessageRow(inserted.rows[0]);
+}
+
+export async function fetchRecentDmMessages(threadId: string, limit = chatHistoryLimit) {
+  const safeLimit = Math.max(1, Math.min(limit, 500));
+  const rows = await pool.query<DmMessageRow>(
+    `
+      SELECT
+        dm_messages.id,
+        dm_messages.thread_id,
+        dm_messages.sender_user_id,
+        users.username AS sender_username,
+        dm_messages.text,
+        dm_messages.created_at
+      FROM dm_messages
+      INNER JOIN users ON users.id = dm_messages.sender_user_id
+      WHERE dm_messages.thread_id = $1
+      ORDER BY dm_messages.created_at DESC
+      LIMIT $2;
+    `,
+    [threadId, safeLimit],
+  );
+
+  return rows.rows.reverse().map(mapDmMessageRow);
 }

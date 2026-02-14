@@ -33,3 +33,24 @@
 - [ ] API metrics endpoint is reachable
 - [ ] CORS origin list is configured for real frontend domains
 - [ ] Strong `JWT_SECRET` is configured in production
+
+
+## AI rollout and rollback operations
+
+Add these AI vars in `.env` before enabling assistant features:
+- `OPENAI_API_KEY`
+- `AI_GLOBAL_KILL_SWITCH=false`
+- `AI_ROLLOUT_STAGE=internal`
+- `AI_INTERNAL_SERVER_IDS=<comma-separated internal server ids>`
+- `AI_BETA_SERVER_IDS=<comma-separated beta server ids>`
+
+Recommended change sequence:
+1. Deploy with `AI_ROLLOUT_STAGE=internal` and only internal server IDs allowed.
+2. Verify owner-only AI settings updates and invoke success/failure behavior in internal servers.
+3. Promote to `beta` and add a limited list to `AI_BETA_SERVER_IDS`.
+4. Promote to `full` after observing stable metrics and budgets.
+
+Rollback procedure:
+1. Set `AI_GLOBAL_KILL_SWITCH=true`.
+2. Restart/redeploy API.
+3. Verify clients receive AI invoke rejection and no new AI completions are emitted.

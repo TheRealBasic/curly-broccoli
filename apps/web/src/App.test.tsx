@@ -579,4 +579,143 @@ describe('App', () => {
     });
   });
 
+
+  it('shows AI settings panel with owner-only permissions for non-owners', async () => {
+    localStorage.setItem(
+      'curly_broccoli_auth',
+      JSON.stringify({
+        user: { id: 'user-1', username: 'alice' },
+        accessToken: 'token-1',
+        refreshToken: 'refresh-1',
+      }),
+    );
+
+    const fetchMock = vi.fn(async (input: URL | RequestInfo) => {
+      const url = String(input);
+      if (url.endsWith('/servers')) {
+        return new Response(JSON.stringify({ servers: [{ id: 'server-1', name: 'Main', ownerId: 'owner-9', soundboardEnabled: true, voiceEffectsEnabled: true }] }), { status: 200 });
+      }
+      if (url.includes('/servers/server-1/channels')) {
+        return new Response(JSON.stringify({ channels: [{ id: 'channel-1', serverId: 'server-1', name: 'general' }] }), { status: 200 });
+      }
+      if (url.includes('/servers/server-1/members')) {
+        return new Response(JSON.stringify({ members: [{ userId: 'owner-9', username: 'owner', role: 'owner', canShareScreen: true, isMuted: false }, { userId: 'user-1', username: 'alice', role: 'member', canShareScreen: true, isMuted: false }] }), { status: 200 });
+      }
+      if (url.includes('/servers/server-1/ai-settings')) {
+        return new Response(JSON.stringify({ settings: { serverId: 'server-1', enabled: true, botDisplayName: 'assistant', model: 'gpt-4.1-mini', systemPrompt: null, maxTokensPerReply: 256, temperature: 0.7, invocationPolicy: 'everyone', status: { enabled: true, keyMissing: false, budgetReached: false, degradedMode: true } } }), { status: 200 });
+      }
+      if (url.includes('/servers/server-1/audit-logs')) {
+        return new Response(JSON.stringify({ logs: [] }), { status: 200 });
+      }
+      if (url.endsWith('/dm/threads')) {
+        return new Response(JSON.stringify({ threads: [] }), { status: 200 });
+      }
+      if (url.endsWith('/unread/summary')) {
+        return new Response(JSON.stringify({ summary: { channels: {}, dmThreads: {}, totalChannels: 0, totalDmThreads: 0 } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({}), { status: 404 });
+    });
+
+    vi.stubGlobal('fetch', fetchMock);
+    render(<App />);
+
+    expect(await screen.findByText('AI Settings')).toBeInTheDocument();
+    expect(await screen.findByText('Owner-only settings')).toBeInTheDocument();
+    expect(screen.getByLabelText('Enable assistant')).toBeDisabled();
+  });
+
+  it('renders streaming AI reply lifecycle from start to completion', async () => {
+    localStorage.setItem(
+      'curly_broccoli_auth',
+      JSON.stringify({
+        user: { id: 'user-1', username: 'alice' },
+        accessToken: 'token-1',
+        refreshToken: 'refresh-1',
+      }),
+    );
+
+    const fetchMock = vi.fn(async (input: URL | RequestInfo) => {
+      const url = String(input);
+      if (url.endsWith('/servers')) {
+        return new Response(JSON.stringify({ servers: [{ id: 'server-1', name: 'Main', ownerId: 'user-1', soundboardEnabled: true, voiceEffectsEnabled: true }] }), { status: 200 });
+      }
+      if (url.includes('/servers/server-1/channels')) {
+        return new Response(JSON.stringify({ channels: [{ id: 'channel-1', serverId: 'server-1', name: 'general' }] }), { status: 200 });
+      }
+      if (url.includes('/servers/server-1/members')) {
+        return new Response(JSON.stringify({ members: [{ userId: 'user-1', username: 'alice', role: 'owner', canShareScreen: true, isMuted: false }] }), { status: 200 });
+      }
+      if (url.includes('/servers/server-1/ai-settings')) {
+        return new Response(JSON.stringify({ settings: { serverId: 'server-1', enabled: true, botDisplayName: 'assistant', model: 'gpt-4.1-mini', systemPrompt: null, maxTokensPerReply: 256, temperature: 0.7, invocationPolicy: 'everyone', status: { enabled: true, keyMissing: false, budgetReached: false, degradedMode: true } } }), { status: 200 });
+      }
+      if (url.includes('/servers/server-1/audit-logs')) {
+        return new Response(JSON.stringify({ logs: [] }), { status: 200 });
+      }
+      if (url.endsWith('/dm/threads')) {
+        return new Response(JSON.stringify({ threads: [] }), { status: 200 });
+      }
+      if (url.endsWith('/unread/summary')) {
+        return new Response(JSON.stringify({ summary: { channels: {}, dmThreads: {}, totalChannels: 0, totalDmThreads: 0 } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({}), { status: 404 });
+    });
+
+    vi.stubGlobal('fetch', fetchMock);
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('#general')).toBeInTheDocument();
+    });
+
+    const socketInstance = MockWebSocket.instances[0];
+
+    act(() => {
+      socketInstance.emit('open');
+      socketInstance.emit('message', {
+        type: 'ai:reply-start',
+        payload: {
+          channelId: 'channel-1',
+          requestId: 'req-1',
+          requestedByUserId: 'user-1',
+          botDisplayName: 'assistant',
+        },
+      });
+      socketInstance.emit('message', {
+        type: 'ai:reply-chunk',
+        payload: {
+          channelId: 'channel-1',
+          requestId: 'req-1',
+          chunk: 'Hello',
+        },
+      });
+    });
+
+    expect(await screen.findByText('assistant')).toBeInTheDocument();
+    expect(await screen.findByText('Hello')).toBeInTheDocument();
+
+    act(() => {
+      socketInstance.emit('message', {
+        type: 'ai:reply-complete',
+        payload: {
+          channelId: 'channel-1',
+          requestId: 'req-1',
+          message: {
+            id: 'bot-1',
+            channelId: 'channel-1',
+            userId: null,
+            user: 'assistant',
+            text: 'Hello',
+            attachments: [],
+            createdAt: '2024-01-01T00:00:00.000Z',
+            editedAt: null,
+          },
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText('assistant')).not.toBeInTheDocument();
+    });
+  });
+
 });

@@ -175,6 +175,11 @@ Primary env vars used by the stack (see `.env.example`):
 - `POSTGRES_DB`
 - `POSTGRES_USER`
 - `POSTGRES_PASSWORD`
+- `OPENAI_API_KEY`
+- `AI_GLOBAL_KILL_SWITCH` (set `true` to disable all AI invokes immediately)
+- `AI_ROLLOUT_STAGE` (`internal` -> `beta` -> `full`, default `internal`)
+- `AI_INTERNAL_SERVER_IDS` (comma-separated server IDs allowed during internal rollout)
+- `AI_BETA_SERVER_IDS` (comma-separated server IDs added during beta rollout)
 
 ## Troubleshooting
 
@@ -262,3 +267,24 @@ docker compose -f docker-compose.prod.yml --env-file .env up -d --build
 - API exposes operational endpoints at `/health` and `/metrics`.
 - CORS is controlled via `CORS_ALLOWED_ORIGINS`.
 - Authentication uses bearer tokens (`Authorization: Bearer <token>`).
+
+
+## AI rollout runbook
+
+Use this staged rollout flow so release risk stays low and rollback is instant:
+
+1. **Internal enablement**
+   - Set `AI_ROLLOUT_STAGE=internal`.
+   - Add only internal test servers to `AI_INTERNAL_SERVER_IDS`.
+   - Keep `AI_GLOBAL_KILL_SWITCH=false`.
+2. **Expand gradually**
+   - Move to `AI_ROLLOUT_STAGE=beta` and add selected production servers to `AI_BETA_SERVER_IDS`.
+   - Monitor `/metrics`, AI error events, and token budget usage.
+3. **Full rollout**
+   - Set `AI_ROLLOUT_STAGE=full` once beta servers are stable.
+4. **Immediate rollback**
+   - Set `AI_GLOBAL_KILL_SWITCH=true` and restart API. This blocks all AI invokes regardless of server settings.
+
+Operational notes:
+- Owner-only AI settings updates are enforced server-side.
+- Per-server rate limits and daily/monthly budgets are enforced in invoke handling.

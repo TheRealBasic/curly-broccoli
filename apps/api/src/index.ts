@@ -25,6 +25,7 @@ import {
   createServer,
   createUser,
   deleteMessageById,
+  updateMessageById,
   fetchRecentDmMessages,
   fetchRecentMessages,
   findRefreshToken,
@@ -58,6 +59,7 @@ const port = Number(process.env.API_PORT ?? 4000);
 const app = createApp({
   fetchRecentMessages,
   deleteMessageById,
+  updateMessageById,
   reportMessageById,
   muteUserInServer,
   listModerationAuditLogs,
@@ -84,6 +86,12 @@ const app = createApp({
   canAccessChannel,
   canManageScreenShare,
   createMessageAttachment,
+  notifyMessageEdited: ({ channelId, messageId, text, editedAt }) => {
+    broadcastToChannel(channelId, {
+      type: 'chat:message-edited',
+      payload: { channelId, messageId, text, editedAt },
+    });
+  },
 });
 const server = http.createServer(app);
 
@@ -108,7 +116,6 @@ const voiceChannelByConnection = new Map<net.Socket, string>();
 const screenPresenterByChannel = new Map<string, string>();
 const screenChannelByPresenterUserId = new Map<string, string>();
 const screenViewersByChannel = new Map<string, Set<string>>();
-
 
 function parseCsvSet(raw: string | undefined) {
   if (!raw) {
@@ -383,7 +390,6 @@ function listVoiceParticipants(channelId: string) {
 
   return Array.from(participantsByUserId.values());
 }
-
 
 async function emitScreenShareModerationAudit(params: {
   channelId: string;
@@ -803,7 +809,6 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
     return;
   }
 
-
   if (event.type === 'screen:share-start') {
     const currentUser = userByConnection.get(socket);
     const channelId = event.payload?.channelId?.trim();
@@ -901,7 +906,6 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
     });
     return;
   }
-
 
   if (event.type === 'screen:force-stop') {
     const currentUser = userByConnection.get(socket);

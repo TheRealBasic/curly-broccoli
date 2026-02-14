@@ -8,6 +8,7 @@ export type ChatMessage = {
   text: string;
   attachments: MessageAttachment[];
   createdAt: string;
+  editedAt?: string | null;
 };
 
 export type MessageAttachment = {
@@ -160,6 +161,10 @@ export type ServerEvent =
   | {
       type: 'chat:message';
       payload: { message: ChatMessage };
+    }
+  | {
+      type: 'chat:message-edited';
+      payload: { channelId: string; messageId: string; text: string; editedAt: string };
     }
   | {
       type: 'notification:channel-message';

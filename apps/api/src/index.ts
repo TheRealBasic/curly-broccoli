@@ -185,6 +185,15 @@ function broadcastToDmThread(threadId: string, event: ServerEvent) {
   }
 }
 
+function sendToUserConnections(userId: string, event: ServerEvent) {
+  const frame = encodeFrame(JSON.stringify(event));
+  for (const socket of clients) {
+    if (userByConnection.get(socket)?.userId === userId) {
+      socket.write(frame);
+    }
+  }
+}
+
 function broadcastToServer(serverId: string, event: ServerEvent) {
   const frame = encodeFrame(JSON.stringify(event));
   for (const socket of connectionsByServer.get(serverId) ?? []) {
@@ -571,6 +580,21 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
         type: 'dm:message',
         payload: { message },
       });
+
+      const thread = await listDmThreadsForUser(currentUser?.userId ?? '');
+      const recipient = thread.find((item) => item.id === threadId);
+      if (recipient) {
+        sendToUserConnections(recipient.otherUserId, {
+          type: 'notification:dm-message',
+          payload: {
+            threadId,
+            messageId: message.id,
+            senderUserId: message.senderUserId,
+            senderUsername: message.senderUsername,
+            text: message.text,
+          },
+        });
+      }
     } catch {
       sendEvent(socket, {
         type: 'error',
@@ -667,6 +691,29 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
       type: 'chat:message',
       payload: { message },
     });
+
+    try {
+      const members = await listServerMembers(server.server_id, currentUser.userId);
+      for (const member of members) {
+        if (member.userId === currentUser.userId) {
+          continue;
+        }
+
+        sendToUserConnections(member.userId, {
+          type: 'notification:channel-message',
+          payload: {
+            serverId: server.server_id,
+            channelId: activeChannelId,
+            messageId: message.id,
+            senderUserId: currentUser.userId,
+            senderUsername: currentUser.username,
+            text: message.text,
+          },
+        });
+      }
+    } catch {
+      // Message is already persisted and broadcasted; skip notification fanout failures.
+    }
   } catch {
     sendEvent(socket, {
       type: 'error',

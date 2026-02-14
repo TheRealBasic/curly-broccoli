@@ -100,6 +100,17 @@ export type ServerEvent =
       payload: { message: ChatMessage };
     }
   | {
+      type: 'notification:channel-message';
+      payload: {
+        serverId: string;
+        channelId: string;
+        messageId: string;
+        senderUserId: string;
+        senderUsername: string;
+        text: string;
+      };
+    }
+  | {
       type: 'dm:history';
       payload: { threadId: string; messages: DmMessage[] };
     }
@@ -110,6 +121,16 @@ export type ServerEvent =
   | {
       type: 'dm:message';
       payload: { message: DmMessage };
+    }
+  | {
+      type: 'notification:dm-message';
+      payload: {
+        threadId: string;
+        messageId: string;
+        senderUserId: string;
+        senderUsername: string;
+        text: string;
+      };
     }
   | {
       type: 'presence:sync';

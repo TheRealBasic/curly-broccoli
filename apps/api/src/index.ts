@@ -4,16 +4,15 @@ import type net from 'node:net';
 import dotenv from 'dotenv';
 import { type ChatMessage, type ClientEvent, type ServerEvent } from '@curly-broccoli/shared';
 import { createApp } from './app.js';
+import { chatHistoryLimit, fetchRecentMessages, runMigrations, saveMessage } from './db.js';
 
 dotenv.config();
 
 const WEBSOCKET_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const port = Number(process.env.API_PORT ?? 4000);
-const app = createApp();
+const app = createApp({ fetchRecentMessages });
 const server = http.createServer(app);
 
-const messages: ChatMessage[] = [];
-const MAX_MESSAGES = 200;
 const RATE_LIMIT_WINDOW_MS = 4_000;
 const RATE_LIMIT_MAX_MESSAGES = 6;
 const clients = new Set<net.Socket>();
@@ -132,7 +131,7 @@ function closeConnection(socket: net.Socket) {
   readBufferByConnection.delete(socket);
 }
 
-function handleClientEvent(socket: net.Socket, raw: string) {
+async function handleClientEvent(socket: net.Socket, raw: string) {
   let event: ClientEvent;
 
   try {
@@ -175,22 +174,25 @@ function handleClientEvent(socket: net.Socket, raw: string) {
     return;
   }
 
-  const message: ChatMessage = {
+  const messageToSave: ChatMessage = {
     id: randomUUID(),
     user: userByConnection.get(socket) ?? 'Anonymous',
     text,
     createdAt: new Date().toISOString()
   };
 
-  messages.push(message);
-  if (messages.length > MAX_MESSAGES) {
-    messages.shift();
+  try {
+    const message = await saveMessage(messageToSave);
+    broadcast({
+      type: 'chat:message',
+      payload: { message }
+    });
+  } catch {
+    sendEvent(socket, {
+      type: 'error',
+      payload: { message: 'Unable to save your message right now.' }
+    });
   }
-
-  broadcast({
-    type: 'chat:message',
-    payload: { message }
-  });
 }
 
 server.on('upgrade', (req, socket) => {
@@ -223,7 +225,16 @@ server.on('upgrade', (req, socket) => {
   readBufferByConnection.set(socket, Buffer.alloc(0));
 
   sendEvent(socket, { type: 'system', payload: { text: `Connected as ${user}` } });
-  sendEvent(socket, { type: 'chat:history', payload: { messages } });
+  void fetchRecentMessages(chatHistoryLimit)
+    .then((messages) => {
+      sendEvent(socket, { type: 'chat:history', payload: { messages } });
+    })
+    .catch(() => {
+      sendEvent(socket, {
+        type: 'error',
+        payload: { message: 'Unable to load message history.' }
+      });
+    });
 
   socket.on('data', (chunk) => {
     const current = Buffer.concat([readBufferByConnection.get(socket) ?? Buffer.alloc(0), chunk]);
@@ -231,7 +242,7 @@ server.on('upgrade', (req, socket) => {
     readBufferByConnection.set(socket, result.remaining);
 
     for (const raw of result.messages) {
-      handleClientEvent(socket, raw);
+      void handleClientEvent(socket, raw);
     }
 
     if (result.shouldClose) {
@@ -249,6 +260,13 @@ server.on('upgrade', (req, socket) => {
   });
 });
 
-server.listen(port, () => {
-  console.log(`API listening on http://localhost:${port}`);
-});
+void runMigrations()
+  .then(() => {
+    server.listen(port, () => {
+      console.log(`API listening on http://localhost:${port}`);
+    });
+  })
+  .catch((error) => {
+    console.error('Failed to run database migrations.', error);
+    process.exit(1);
+  });

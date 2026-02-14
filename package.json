@@ -1,0 +1,21 @@
+{
+  "name": "curly-broccoli",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@9.12.0",
+  "scripts": {
+    "dev": "pnpm -r --parallel dev",
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "lint": "pnpm -r lint",
+    "format": "prettier --check .",
+    "format:write": "prettier --write ."
+  },
+  "devDependencies": {
+    "prettier": "^3.3.3",
+    "@eslint/js": "^9.10.0",
+    "eslint": "^9.10.0",
+    "typescript-eslint": "^8.6.0"
+  },
+  "type": "module"
+}

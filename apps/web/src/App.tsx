@@ -74,6 +74,13 @@ type ScreenEncodingPreset = {
   maxFramerate: number;
 };
 
+type RollingClipChunk = {
+  blob: Blob;
+  capturedAt: number;
+};
+
+type HighlightRecorderState = 'disabled' | 'buffering' | 'saving';
+
 const AUTH_STORAGE_KEY = 'curly_broccoli_auth';
 const DESKTOP_NOTIFICATIONS_STORAGE_KEY = 'curly_broccoli_desktop_notifications_enabled';
 const SPATIAL_AUDIO_STORAGE_KEY = 'curly_broccoli_spatial_audio_enabled';
@@ -95,6 +102,8 @@ const SCREEN_PRESETS: Record<ScreenContentType, ScreenEncodingPreset> = {
   mixed: { maxBitrateBps: 1_200_000, maxFramerate: 15 },
   motion: { maxBitrateBps: 2_500_000, maxFramerate: 30 },
 };
+const HIGHLIGHT_BUFFER_MS = 30_000;
+const HIGHLIGHT_CHUNK_MS = 1_000;
 
 type NotificationPermissionState = 'unsupported' | NotificationPermission;
 
@@ -261,6 +270,9 @@ export function App() {
   const remoteScreenVideoRef = useRef<HTMLVideoElement | null>(null);
   const watchVideoRef = useRef<HTMLVideoElement | null>(null);
   const coWatchSuppressSyncRef = useRef(false);
+  const highlightRecorderRef = useRef<MediaRecorder | null>(null);
+  const highlightBufferRef = useRef<RollingClipChunk[]>([]);
+  const highlightCaptureStreamRef = useRef<MediaStream | null>(null);
 
   const [auth, setAuth] = useState<AuthState | null>(() => loadAuthState());
   const [authMode, setAuthMode] = useState<AuthMode>('login');
@@ -315,6 +327,9 @@ export function App() {
   const [coWatchUrlInput, setCoWatchUrlInput] = useState('');
   const [coWatchLocalMedia, setCoWatchLocalMedia] = useState<{ fileName: string; objectUrl: string } | null>(null);
   const [coWatchAllowOthersControl, setCoWatchAllowOthersControl] = useState(false);
+  const [highlightCaptureEnabled, setHighlightCaptureEnabled] = useState(false);
+  const [highlightUploadOnSave, setHighlightUploadOnSave] = useState(false);
+  const [highlightRecorderState, setHighlightRecorderState] = useState<HighlightRecorderState>('disabled');
   const [activeServerId, setActiveServerId] = useState<string | null>(null);
   const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
   const [serverNameInput, setServerNameInput] = useState('');
@@ -1926,6 +1941,58 @@ export function App() {
   }, [remoteScreenStream]);
 
   useEffect(() => {
+    const stopRecorder = () => {
+      highlightRecorderRef.current?.stop();
+      highlightRecorderRef.current = null;
+      highlightCaptureStreamRef.current?.getTracks().forEach((track) => track.stop());
+      highlightCaptureStreamRef.current = null;
+    };
+
+    if (!highlightCaptureEnabled) {
+      stopRecorder();
+      highlightBufferRef.current = [];
+      setHighlightRecorderState('disabled');
+      return;
+    }
+
+    if (!remoteScreenStream || typeof MediaRecorder === 'undefined') {
+      setHighlightRecorderState('disabled');
+      return;
+    }
+
+    const captureStream = new MediaStream();
+    remoteScreenStream.getVideoTracks().forEach((track) => captureStream.addTrack(track.clone()));
+    remoteScreenStream.getAudioTracks().forEach((track) => captureStream.addTrack(track.clone()));
+    processedLocalVoiceStreamRef.current?.getAudioTracks().forEach((track) => captureStream.addTrack(track.clone()));
+
+    if (captureStream.getTracks().length === 0) {
+      setHighlightRecorderState('disabled');
+      return;
+    }
+
+    const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')
+      ? 'video/webm;codecs=vp8,opus'
+      : 'video/webm';
+
+    const recorder = new MediaRecorder(captureStream, { mimeType });
+    recorder.ondataavailable = (event) => {
+      if (event.data.size === 0) return;
+      const now = Date.now();
+      highlightBufferRef.current = [...highlightBufferRef.current, { blob: event.data, capturedAt: now }].filter(
+        (entry) => now - entry.capturedAt <= HIGHLIGHT_BUFFER_MS,
+      );
+    };
+    recorder.start(HIGHLIGHT_CHUNK_MS);
+    highlightRecorderRef.current = recorder;
+    highlightCaptureStreamRef.current = captureStream;
+    setHighlightRecorderState('buffering');
+
+    return () => {
+      stopRecorder();
+    };
+  }, [highlightCaptureEnabled, remoteScreenStream]);
+
+  useEffect(() => {
     if (!voiceChannelId || !activeChannelId || voiceChannelId === activeChannelId) {
       return;
     }
@@ -2374,10 +2441,10 @@ export function App() {
     });
   }
 
-  async function uploadAttachment(file: File) {
+  async function uploadAttachment(file: File, uploadKind: 'attachment' | 'clip' = 'attachment') {
     if (!activeChannelId || !auth) {
       setError('Select a channel before uploading attachments.');
-      return;
+      return null;
     }
 
     const localId = crypto.randomUUID();
@@ -2401,6 +2468,9 @@ export function App() {
       const formData = new FormData();
       formData.set('channelId', activeChannelId);
       formData.set('file', file);
+      if (uploadKind === 'clip') {
+        formData.set('uploadKind', 'clip');
+      }
 
       const data = await new Promise<{ attachment: { id: string } }>((resolve, reject) => {
         const request = new XMLHttpRequest();
@@ -2437,14 +2507,58 @@ export function App() {
         ),
       );
       setError(null);
+      return data.attachment.id;
     } catch {
       setPendingAttachmentUploads((prev) =>
         prev.map((item) => (item.localId === localId ? { ...item, status: 'failed' } : item)),
       );
-      setError('Unable to upload attachment.');
+      setError(uploadKind === 'clip' ? 'Unable to upload highlight clip.' : 'Unable to upload attachment.');
+      return null;
     }
   }
 
+  async function saveHighlightClip() {
+    if (!highlightCaptureEnabled) {
+      setError('Enable highlight capture before saving clips.');
+      return;
+    }
+
+    const chunks = highlightBufferRef.current;
+    if (chunks.length === 0) {
+      setError('No buffered highlight available yet.');
+      return;
+    }
+
+    setHighlightRecorderState('saving');
+    const clipBlob = new Blob(
+      chunks.filter((entry) => entry.blob.size > 0).map((entry) => entry.blob),
+      { type: 'video/webm' },
+    );
+    if (clipBlob.size === 0) {
+      setHighlightRecorderState('buffering');
+      setError('No buffered highlight available yet.');
+      return;
+    }
+
+    const fileName = `highlight-${new Date().toISOString().replace(/[:.]/g, '-')}.webm`;
+    const clipFile = new File([clipBlob], fileName, { type: 'video/webm' });
+
+    const objectUrl = URL.createObjectURL(clipBlob);
+    const anchor = document.createElement('a');
+    anchor.href = objectUrl;
+    anchor.download = fileName;
+    anchor.click();
+    URL.revokeObjectURL(objectUrl);
+
+    if (highlightUploadOnSave) {
+      await uploadAttachment(clipFile, 'clip');
+      setDraft((prev) => (prev.trim().length > 0 ? prev : 'Saved a voice/screen highlight clip.'));
+    }
+
+    setSystemMessage('Saved last 30 seconds clip locally.');
+    setHighlightRecorderState('buffering');
+    setError(null);
+  }
   async function submitAuthForm(event: FormEvent) {
     event.preventDefault();
 
@@ -3151,6 +3265,35 @@ export function App() {
             </div>
           )}
 
+          <section className="voice-panel highlight-panel">
+            <h3>Highlights</h3>
+            <label>
+              <input
+                type="checkbox"
+                checked={highlightCaptureEnabled}
+                onChange={(event) => setHighlightCaptureEnabled(event.target.checked)}
+              />
+              I consent to local rolling capture of recent voice/screen moments.
+            </label>
+            <p className="subtle">Status: {highlightRecorderState === 'buffering' ? 'recording (rolling 30s)' : highlightRecorderState}</p>
+            <p className="subtle">Privacy: clips are temporary in memory and replaced after 30 seconds until you save.</p>
+            <label>
+              <input
+                type="checkbox"
+                checked={highlightUploadOnSave}
+                onChange={(event) => setHighlightUploadOnSave(event.target.checked)}
+              />
+              Upload saved clip to this channel as an attachment.
+            </label>
+            <button
+              type="button"
+              onClick={() => void saveHighlightClip()}
+              disabled={!highlightCaptureEnabled || highlightRecorderState === 'saving' || !activeChannelId}
+            >
+              {highlightRecorderState === 'saving' ? 'Saving clip…' : 'Save last 30 seconds'}
+            </button>
+          </section>
+
           <section className="voice-panel">
             <h3>Playful audio</h3>
             <div className="voice-panel-actions">
@@ -3383,24 +3526,40 @@ export function App() {
                 )}
                 {'attachments' in message && message.attachments.length > 0 && (
                   <div className="attachment-grid">
-                    {message.attachments.map((attachment) => (
-                      <a
-                        key={attachment.id}
-                        className={attachment.category === 'image' ? 'attachment-card image' : 'attachment-card file'}
-                        href={`${apiBase}${attachment.url}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        download={attachment.fileName}
-                      >
-                        {attachment.category === 'image' ? (
-                          <img src={`${apiBase}${attachment.url}`} alt={attachment.fileName} />
-                        ) : (
-                          <span className="file-attachment-label">
-                            {attachmentIcon(attachment.category)} {attachment.fileName}
-                          </span>
-                        )}
-                      </a>
-                    ))}
+                    {message.attachments.map((attachment) => {
+                      const attachmentUrl = `${apiBase}${attachment.url}`;
+                      const isClip = attachment.mimeType === 'video/webm' || attachment.fileName.startsWith('highlight-');
+                      if (isClip) {
+                        return (
+                          <article key={attachment.id} className="attachment-card file clip-card">
+                            <strong>🎞️ Highlight clip</strong>
+                            <video controls preload="metadata" src={attachmentUrl} />
+                            <a href={attachmentUrl} target="_blank" rel="noreferrer" download={attachment.fileName}>
+                              Download {attachment.fileName}
+                            </a>
+                          </article>
+                        );
+                      }
+
+                      return (
+                        <a
+                          key={attachment.id}
+                          className={attachment.category === 'image' ? 'attachment-card image' : 'attachment-card file'}
+                          href={attachmentUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          download={attachment.fileName}
+                        >
+                          {attachment.category === 'image' ? (
+                            <img src={attachmentUrl} alt={attachment.fileName} />
+                          ) : (
+                            <span className="file-attachment-label">
+                              {attachmentIcon(attachment.category)} {attachment.fileName}
+                            </span>
+                          )}
+                        </a>
+                      );
+                    })}
                   </div>
                 )}
                 {'user' in message && chatMode === 'channel' && (

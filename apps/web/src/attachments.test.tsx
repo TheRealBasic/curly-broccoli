@@ -208,4 +208,62 @@ describe('Attachment flows', () => {
       expect.stringContaining('"attachmentIds":["att-1"]'),
     );
   });
+
+  it('renders highlight clips inline in the message feed', async () => {
+    vi.stubGlobal('fetch', buildSignedInFetchMock());
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('#general')).toBeInTheDocument();
+    });
+
+    const socket = MockWebSocket.instances[0];
+    act(() => {
+      socket.emit('open');
+      socket.emit('message', {
+        type: 'chat:history',
+        payload: {
+          channelId: 'channel-1',
+          messages: [
+            {
+              id: 'msg-clip-1',
+              channelId: 'channel-1',
+              userId: 'user-1',
+              user: 'alice',
+              text: 'highlight',
+              attachments: [
+                {
+                  id: 'att-clip-1',
+                  fileName: 'highlight-demo.webm',
+                  mimeType: 'video/webm',
+                  category: 'video',
+                  sizeBytes: 128,
+                  url: '/uploads/highlight-demo.webm',
+                },
+              ],
+              createdAt: '2024-01-01T00:00:00.000Z',
+              editedAt: null,
+            },
+          ],
+        },
+      });
+    });
+
+    expect(await screen.findByText('🎞️ Highlight clip')).toBeInTheDocument();
+    expect(document.querySelector('video[controls]')).toBeTruthy();
+  });
+
+  it('shows highlight capture consent controls and retention warning', async () => {
+    vi.stubGlobal('fetch', buildSignedInFetchMock());
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('#general')).toBeInTheDocument();
+    });
+
+    expect(screen.getByText(/temporary in memory and replaced after 30 seconds/i)).toBeInTheDocument();
+    const consent = screen.getByLabelText(/I consent to local rolling capture/i);
+    fireEvent.click(consent);
+    expect((consent as HTMLInputElement).checked).toBe(true);
+  });
 });

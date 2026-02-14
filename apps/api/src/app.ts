@@ -274,6 +274,11 @@ const uploadPolicy: UploadPolicyConfig = {
   ],
 };
 
+
+const clipUploadPolicy = {
+  allowedMimeTypes: new Set(['video/webm', 'audio/webm']),
+  maxSizeBytes: 20 * 1024 * 1024,
+};
 const maxUploadSizeBytes = Math.max(...uploadPolicy.rules.map((rule) => rule.maxSizeBytes));
 
 function getUploadPolicyRule(mimeType: string) {
@@ -874,6 +879,18 @@ export function createApp(deps: AppDependencies) {
     }
 
     const mimeType = String(file.mimetype ?? '').trim().toLowerCase();
+    const uploadKind = String(req.body?.uploadKind ?? '').trim().toLowerCase();
+    if (uploadKind === 'clip') {
+      if (!clipUploadPolicy.allowedMimeTypes.has(mimeType)) {
+        res.status(415).json({ error: 'Clip uploads must be .webm audio/video files.' });
+        return;
+      }
+      if (file.buffer.length > clipUploadPolicy.maxSizeBytes) {
+        res.status(400).json({ error: 'Clip uploads are limited to 20MB.' });
+        return;
+      }
+    }
+
     const result = await persistAttachmentUpload({
       authUserId: auth.userId,
       channelId,

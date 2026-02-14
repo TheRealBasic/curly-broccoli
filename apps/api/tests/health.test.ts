@@ -284,6 +284,36 @@ describe('API permission checks', () => {
   });
 
 
+  it('rejects clip uploads that are not webm', async () => {
+    const { createApp } = await import('../src/app.js');
+    const app = createApp(baseDeps);
+
+    const token = createAccessToken({ id: 'user-1', username: 'alice' });
+    const res = await request(app)
+      .post('/uploads/attachments')
+      .set('Authorization', `Bearer ${token}`)
+      .field('channelId', 'channel-1')
+      .field('uploadKind', 'clip')
+      .attach('file', Buffer.from('ok'), { filename: 'clip.mp4', contentType: 'video/mp4' });
+
+    expect(res.status).toBe(415);
+  });
+
+  it('rejects clip uploads above 20MB', async () => {
+    const { createApp } = await import('../src/app.js');
+    const app = createApp(baseDeps);
+
+    const token = createAccessToken({ id: 'user-1', username: 'alice' });
+    const res = await request(app)
+      .post('/uploads/attachments')
+      .set('Authorization', `Bearer ${token}`)
+      .field('channelId', 'channel-1')
+      .field('uploadKind', 'clip')
+      .attach('file', Buffer.alloc(21 * 1024 * 1024, 1), { filename: 'clip.webm', contentType: 'video/webm' });
+
+    expect(res.status).toBe(400);
+  });
+
   it('rejects multipart attachments that exceed category size limits', async () => {
     const { createApp } = await import('../src/app.js');
     const app = createApp(baseDeps);

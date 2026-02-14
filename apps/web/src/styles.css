@@ -15,6 +15,10 @@ body {
   padding: 0 1rem;
 }
 
+.auth-layout {
+  max-width: 420px;
+}
+
 h1 {
   margin: 0;
 }
@@ -22,6 +26,22 @@ h1 {
 .subtle {
   color: #4b5563;
   margin: 0.35rem 0;
+}
+
+.chat-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+}
+
+.logout-button {
+  border: none;
+  border-radius: 0.4rem;
+  padding: 0.45rem 0.85rem;
+  background: #111827;
+  color: white;
+  cursor: pointer;
 }
 
 .chat-box {
@@ -67,7 +87,8 @@ h1 {
   gap: 0.5rem;
 }
 
-.composer input {
+.composer input,
+.auth-form input {
   flex: 1;
   border-radius: 0.4rem;
   border: 1px solid #d1d5db;
@@ -75,7 +96,9 @@ h1 {
   font-size: 1rem;
 }
 
-.composer button {
+.composer button,
+.auth-form button,
+.auth-toggle button {
   border: none;
   border-radius: 0.4rem;
   padding: 0.55rem 1rem;
@@ -87,6 +110,33 @@ h1 {
 .composer button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.auth-toggle {
+  margin-top: 1rem;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
+.auth-toggle button {
+  background: #9ca3af;
+}
+
+.auth-toggle button.active {
+  background: #1d4ed8;
+}
+
+.auth-form {
+  margin-top: 0.75rem;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.auth-form label {
+  display: grid;
+  gap: 0.35rem;
+  font-weight: 500;
 }
 
 .error {

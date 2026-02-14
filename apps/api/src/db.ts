@@ -25,6 +25,20 @@ type ChatMessageRow = {
   created_at: Date | string;
 };
 
+type UserRow = {
+  id: string;
+  username: string;
+  password_hash: string;
+};
+
+type RefreshTokenRow = {
+  id: string;
+  user_id: string;
+  token_hash: string;
+  expires_at: Date | string;
+  revoked_at: Date | string | null;
+};
+
 function mapRow(row: ChatMessageRow): ChatMessage {
   return {
     id: row.id,
@@ -71,6 +85,66 @@ export async function runMigrations() {
       throw error;
     }
   }
+}
+
+export async function createUser(id: string, username: string, passwordHash: string) {
+  const inserted = await pool.query<UserRow>(
+    `
+      INSERT INTO users (id, username, password_hash)
+      VALUES ($1, $2, $3)
+      RETURNING id, username, password_hash;
+    `,
+    [id, username, passwordHash]
+  );
+
+  return inserted.rows[0];
+}
+
+export async function findUserByUsername(username: string) {
+  const result = await pool.query<UserRow>(
+    `
+      SELECT id, username, password_hash
+      FROM users
+      WHERE username = $1;
+    `,
+    [username]
+  );
+
+  return result.rows[0] ?? null;
+}
+
+export async function storeRefreshToken(id: string, userId: string, tokenHash: string, expiresAt: string) {
+  await pool.query(
+    `
+      INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at)
+      VALUES ($1, $2, $3, $4);
+    `,
+    [id, userId, tokenHash, expiresAt]
+  );
+}
+
+export async function findRefreshToken(tokenHash: string) {
+  const result = await pool.query<RefreshTokenRow>(
+    `
+      SELECT id, user_id, token_hash, expires_at, revoked_at
+      FROM refresh_tokens
+      WHERE token_hash = $1;
+    `,
+    [tokenHash]
+  );
+
+  return result.rows[0] ?? null;
+}
+
+export async function revokeRefreshToken(tokenHash: string) {
+  await pool.query(
+    `
+      UPDATE refresh_tokens
+      SET revoked_at = NOW()
+      WHERE token_hash = $1 AND revoked_at IS NULL;
+    `,
+    [tokenHash]
+  );
 }
 
 export async function saveMessage(message: ChatMessage) {

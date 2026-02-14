@@ -4,13 +4,31 @@ import type net from 'node:net';
 import dotenv from 'dotenv';
 import { type ChatMessage, type ClientEvent, type ServerEvent } from '@curly-broccoli/shared';
 import { createApp } from './app.js';
-import { chatHistoryLimit, fetchRecentMessages, runMigrations, saveMessage } from './db.js';
+import { verifyAccessToken } from './auth.js';
+import {
+  chatHistoryLimit,
+  createUser,
+  fetchRecentMessages,
+  findRefreshToken,
+  findUserByUsername,
+  revokeRefreshToken,
+  runMigrations,
+  saveMessage,
+  storeRefreshToken
+} from './db.js';
 
 dotenv.config();
 
 const WEBSOCKET_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const port = Number(process.env.API_PORT ?? 4000);
-const app = createApp({ fetchRecentMessages });
+const app = createApp({
+  fetchRecentMessages,
+  findUserByUsername,
+  createUser,
+  storeRefreshToken,
+  findRefreshToken,
+  revokeRefreshToken
+});
 const server = http.createServer(app);
 
 const RATE_LIMIT_WINDOW_MS = 4_000;
@@ -19,15 +37,6 @@ const clients = new Set<net.Socket>();
 const userByConnection = new Map<net.Socket, string>();
 const sentTimestampsByConnection = new Map<net.Socket, number[]>();
 const readBufferByConnection = new Map<net.Socket, Buffer>();
-
-function randomName() {
-  const adjectives = ['Swift', 'Blue', 'Mellow', 'Bold', 'Sunny', 'Brisk'];
-  const nouns = ['Otter', 'Panda', 'Falcon', 'Fox', 'Bee', 'Cat'];
-  const adjective = adjectives[Math.floor(Math.random() * adjectives.length)];
-  const noun = nouns[Math.floor(Math.random() * nouns.length)];
-  const suffix = Math.floor(Math.random() * 900 + 100);
-  return `${adjective}${noun}${suffix}`;
-}
 
 function encodeFrame(text: string) {
   const payload = Buffer.from(text);
@@ -196,7 +205,20 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
 }
 
 server.on('upgrade', (req, socket) => {
-  if (req.url !== '/') {
+  const requestUrl = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+  const token = requestUrl.searchParams.get('token');
+
+  if (requestUrl.pathname !== '/' || !token) {
+    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+
+  let authUser: { userId: string; username: string };
+  try {
+    authUser = verifyAccessToken(token);
+  } catch {
+    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
     socket.destroy();
     return;
   }
@@ -219,12 +241,11 @@ server.on('upgrade', (req, socket) => {
   );
 
   clients.add(socket);
-  const user = randomName();
-  userByConnection.set(socket, user);
+  userByConnection.set(socket, authUser.username);
   sentTimestampsByConnection.set(socket, []);
   readBufferByConnection.set(socket, Buffer.alloc(0));
 
-  sendEvent(socket, { type: 'system', payload: { text: `Connected as ${user}` } });
+  sendEvent(socket, { type: 'system', payload: { text: `Connected as ${authUser.username}` } });
   void fetchRecentMessages(chatHistoryLimit)
     .then((messages) => {
       sendEvent(socket, { type: 'chat:history', payload: { messages } });

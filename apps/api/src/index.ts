@@ -99,6 +99,8 @@ const typingByChannel = new Map<
   string,
   Map<string, { username: string; connections: Set<net.Socket> }>
 >();
+const voiceConnectionsByChannel = new Map<string, Set<net.Socket>>();
+const voiceChannelByConnection = new Map<net.Socket, string>();
 
 function encodeFrame(text: string) {
   const payload = Buffer.from(text);
@@ -321,8 +323,64 @@ function removePresenceSubscription(socket: net.Socket, serverId: string) {
   }
 }
 
+function listVoiceParticipants(channelId: string) {
+  const participantsByUserId = new Map<string, { userId: string; username: string }>();
+  for (const socket of voiceConnectionsByChannel.get(channelId) ?? []) {
+    const authUser = userByConnection.get(socket);
+    if (!authUser) {
+      continue;
+    }
+
+    participantsByUserId.set(authUser.userId, {
+      userId: authUser.userId,
+      username: authUser.username,
+    });
+  }
+
+  return Array.from(participantsByUserId.values());
+}
+
+function leaveVoiceChannel(socket: net.Socket) {
+  const channelId = voiceChannelByConnection.get(socket);
+  if (!channelId) {
+    return;
+  }
+
+  voiceChannelByConnection.delete(socket);
+  const sockets = voiceConnectionsByChannel.get(channelId);
+  sockets?.delete(socket);
+
+  if (sockets && sockets.size === 0) {
+    voiceConnectionsByChannel.delete(channelId);
+  }
+
+  const authUser = userByConnection.get(socket);
+  if (!authUser) {
+    return;
+  }
+
+  const stillPresent = Array.from(sockets ?? []).some(
+    (client) => userByConnection.get(client)?.userId === authUser.userId,
+  );
+
+  if (!stillPresent) {
+    const remainingSockets = voiceConnectionsByChannel.get(channelId);
+    const frame = encodeFrame(
+      JSON.stringify({
+        type: 'voice:user-left',
+        payload: { channelId, userId: authUser.userId },
+      }),
+    );
+
+    for (const client of remainingSockets ?? []) {
+      client.write(frame);
+    }
+  }
+}
+
 function closeConnection(socket: net.Socket) {
   stopTypingForSocket(socket);
+  leaveVoiceChannel(socket);
 
   const serverIds = Array.from(serversByConnection.get(socket) ?? []);
   for (const serverId of serverIds) {
@@ -453,6 +511,107 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
     }
 
     addPresenceSubscription(socket, serverId);
+    return;
+  }
+
+  if (event.type === 'voice:join-channel') {
+    const currentUser = userByConnection.get(socket);
+    const channelId = event.payload?.channelId?.trim();
+    if (!currentUser || !channelId) {
+      sendEvent(socket, { type: 'error', payload: { message: 'channelId is required.' } });
+      return;
+    }
+
+    const allowed = await canAccessChannel(channelId, currentUser.userId);
+    if (!allowed) {
+      sendEvent(socket, {
+        type: 'error',
+        payload: { message: 'You cannot join this voice channel.' },
+      });
+      return;
+    }
+
+    const previousChannelId = voiceChannelByConnection.get(socket);
+    if (previousChannelId === channelId) {
+      sendEvent(socket, {
+        type: 'voice:participants',
+        payload: { channelId, participants: listVoiceParticipants(channelId) },
+      });
+      return;
+    }
+
+    leaveVoiceChannel(socket);
+    voiceChannelByConnection.set(socket, channelId);
+    const sockets = voiceConnectionsByChannel.get(channelId) ?? new Set<net.Socket>();
+    sockets.add(socket);
+    voiceConnectionsByChannel.set(channelId, sockets);
+
+    sendEvent(socket, {
+      type: 'voice:participants',
+      payload: { channelId, participants: listVoiceParticipants(channelId) },
+    });
+
+    const frame = encodeFrame(
+      JSON.stringify({
+        type: 'voice:user-joined',
+        payload: {
+          channelId,
+          participant: { userId: currentUser.userId, username: currentUser.username },
+        },
+      }),
+    );
+    for (const client of sockets) {
+      if (client === socket) {
+        continue;
+      }
+      client.write(frame);
+    }
+    return;
+  }
+
+  if (event.type === 'voice:leave-channel') {
+    leaveVoiceChannel(socket);
+    return;
+  }
+
+  if (event.type === 'voice:signal') {
+    const currentUser = userByConnection.get(socket);
+    const channelId = event.payload?.channelId?.trim();
+    const targetUserId = event.payload?.targetUserId?.trim();
+    if (!currentUser || !channelId || !targetUserId) {
+      sendEvent(socket, {
+        type: 'error',
+        payload: { message: 'channelId and targetUserId are required for signaling.' },
+      });
+      return;
+    }
+
+    if (voiceChannelByConnection.get(socket) !== channelId) {
+      sendEvent(socket, {
+        type: 'error',
+        payload: { message: 'Join the voice channel before sending signals.' },
+      });
+      return;
+    }
+
+    const targetSocket = Array.from(voiceConnectionsByChannel.get(channelId) ?? []).find(
+      (client) => userByConnection.get(client)?.userId === targetUserId,
+    );
+
+    if (!targetSocket) {
+      sendEvent(socket, { type: 'error', payload: { message: 'Voice peer is offline.' } });
+      return;
+    }
+
+    sendEvent(targetSocket, {
+      type: 'voice:signal',
+      payload: {
+        channelId,
+        fromUserId: currentUser.userId,
+        description: event.payload.description,
+        candidate: event.payload.candidate,
+      },
+    });
     return;
   }
 

@@ -3,7 +3,7 @@ import {
   createHmac,
   randomBytes,
   scrypt as scryptCallback,
-  timingSafeEqual
+  timingSafeEqual,
 } from 'node:crypto';
 import { promisify } from 'node:util';
 
@@ -122,7 +122,7 @@ export function createAccessToken(user: AuthUser) {
     username: user.username,
     type: 'access',
     iat,
-    exp: iat + ACCESS_TOKEN_TTL_SECONDS
+    exp: iat + ACCESS_TOKEN_TTL_SECONDS,
   });
 }
 
@@ -134,7 +134,7 @@ export function createRefreshToken(user: AuthUser, tokenId: string) {
     type: 'refresh',
     iat,
     exp: iat + REFRESH_TOKEN_TTL_SECONDS,
-    jti: tokenId
+    jti: tokenId,
   });
 }
 
@@ -143,7 +143,7 @@ export function verifyAccessToken(token: string) {
 
   return {
     userId: payload.sub,
-    username: payload.username
+    username: payload.username,
   };
 }
 
@@ -158,7 +158,7 @@ export function verifyRefreshToken(token: string) {
     userId: payload.sub,
     username: payload.username,
     tokenId: payload.jti,
-    expiresAt: new Date(payload.exp * 1000).toISOString()
+    expiresAt: new Date(payload.exp * 1000).toISOString(),
   };
 }
 

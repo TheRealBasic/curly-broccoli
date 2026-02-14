@@ -1,7 +1,13 @@
 import cors from 'cors';
 import express from 'express';
 import { randomUUID } from 'node:crypto';
-import { APP_NAME, type ChannelSummary, type ChatMessage, type ServerSummary } from '@curly-broccoli/shared';
+import {
+  APP_NAME,
+  type ChannelSummary,
+  type ChatMessage,
+  type ServerMember,
+  type ServerSummary,
+} from '@curly-broccoli/shared';
 import {
   createAccessToken,
   createRefreshToken,
@@ -9,7 +15,7 @@ import {
   hashToken,
   verifyAccessToken,
   verifyPassword,
-  verifyRefreshToken
+  verifyRefreshToken,
 } from './auth.js';
 
 type UserRecord = {
@@ -31,19 +37,34 @@ type AppDependencies = {
   findUserByUsername: (username: string) => Promise<UserRecord | null>;
   findUserById: (id: string) => Promise<UserRecord | null>;
   createUser: (id: string, username: string, passwordHash: string) => Promise<UserRecord>;
-  storeRefreshToken: (id: string, userId: string, tokenHash: string, expiresAt: string) => Promise<void>;
+  storeRefreshToken: (
+    id: string,
+    userId: string,
+    tokenHash: string,
+    expiresAt: string,
+  ) => Promise<void>;
   findRefreshToken: (tokenHash: string) => Promise<RefreshTokenRecord | null>;
   revokeRefreshToken: (tokenHash: string) => Promise<void>;
   listServersForUser: (userId: string) => Promise<ServerSummary[]>;
   createServer: (id: string, name: string, ownerId: string) => Promise<ServerSummary>;
-  addServerMembership: (serverId: string, userId: string, role: 'owner' | 'member') => Promise<void>;
+  addServerMembership: (
+    serverId: string,
+    userId: string,
+    role: 'owner' | 'member',
+  ) => Promise<void>;
   listChannelsForServer: (serverId: string, userId: string) => Promise<ChannelSummary[]>;
-  createChannel: (id: string, serverId: string, name: string, userId: string) => Promise<ChannelSummary>;
+  createChannel: (
+    id: string,
+    serverId: string,
+    name: string,
+    userId: string,
+  ) => Promise<ChannelSummary>;
   addMemberByUsername: (
     serverId: string,
     username: string,
-    actorUserId: string
+    actorUserId: string,
   ) => Promise<{ userId: string; username: string } | null>;
+  listServerMembers: (serverId: string, userId: string) => Promise<ServerMember[]>;
 };
 
 function validateAuthInput(username: string, password: string) {
@@ -54,7 +75,7 @@ function validateAuthInput(username: string, password: string) {
   return {
     ok: usernameValid && passwordValid,
     normalizedUsername,
-    message: 'Username must be 3-32 chars (letters/numbers/_), password 8-128 chars.'
+    message: 'Username must be 3-32 chars (letters/numbers/_), password 8-128 chars.',
   };
 }
 
@@ -67,7 +88,12 @@ function readBearerToken(authHeader?: string) {
 }
 
 function normalizeChannelName(name: string) {
-  return name.trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9_-]/g, '').slice(0, 48);
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/[^a-z0-9_-]/g, '')
+    .slice(0, 48);
 }
 
 export function createApp(deps: AppDependencies) {
@@ -116,24 +142,29 @@ export function createApp(deps: AppDependencies) {
 
     const refreshTokenId = randomUUID();
     const accessToken = createAccessToken({ id: user.id, username: user.username });
-    const refreshToken = createRefreshToken({ id: user.id, username: user.username }, refreshTokenId);
+    const refreshToken = createRefreshToken(
+      { id: user.id, username: user.username },
+      refreshTokenId,
+    );
     const refreshPayload = verifyRefreshToken(refreshToken);
 
     await deps.storeRefreshToken(
       refreshTokenId,
       user.id,
       hashToken(refreshToken),
-      refreshPayload.expiresAt
+      refreshPayload.expiresAt,
     );
 
     res.status(201).json({
       user: { id: user.id, username: user.username },
-      tokens: { accessToken, refreshToken }
+      tokens: { accessToken, refreshToken },
     });
   });
 
   app.post('/auth/login', async (req, res) => {
-    const username = String(req.body?.username ?? '').trim().toLowerCase();
+    const username = String(req.body?.username ?? '')
+      .trim()
+      .toLowerCase();
     const password = String(req.body?.password ?? '');
 
     if (!username || !password) {
@@ -149,19 +180,22 @@ export function createApp(deps: AppDependencies) {
 
     const refreshTokenId = randomUUID();
     const accessToken = createAccessToken({ id: user.id, username: user.username });
-    const refreshToken = createRefreshToken({ id: user.id, username: user.username }, refreshTokenId);
+    const refreshToken = createRefreshToken(
+      { id: user.id, username: user.username },
+      refreshTokenId,
+    );
     const refreshPayload = verifyRefreshToken(refreshToken);
 
     await deps.storeRefreshToken(
       refreshTokenId,
       user.id,
       hashToken(refreshToken),
-      refreshPayload.expiresAt
+      refreshPayload.expiresAt,
     );
 
     res.json({
       user: { id: user.id, username: user.username },
-      tokens: { accessToken, refreshToken }
+      tokens: { accessToken, refreshToken },
     });
   });
 
@@ -189,7 +223,7 @@ export function createApp(deps: AppDependencies) {
       const accessToken = createAccessToken({ id: payload.userId, username: payload.username });
       const nextRefreshToken = createRefreshToken(
         { id: payload.userId, username: payload.username },
-        nextRefreshTokenId
+        nextRefreshTokenId,
       );
       const nextRefreshPayload = verifyRefreshToken(nextRefreshToken);
 
@@ -197,12 +231,12 @@ export function createApp(deps: AppDependencies) {
         nextRefreshTokenId,
         payload.userId,
         hashToken(nextRefreshToken),
-        nextRefreshPayload.expiresAt
+        nextRefreshPayload.expiresAt,
       );
 
       res.json({
         user: { id: payload.userId, username: payload.username },
-        tokens: { accessToken, refreshToken: nextRefreshToken }
+        tokens: { accessToken, refreshToken: nextRefreshToken },
       });
     } catch {
       res.status(401).json({ error: 'Refresh token is invalid or expired.' });
@@ -303,10 +337,29 @@ export function createApp(deps: AppDependencies) {
     }
 
     try {
-      const channel = await deps.createChannel(randomUUID(), req.params.serverId, normalizedName, auth.userId);
+      const channel = await deps.createChannel(
+        randomUUID(),
+        req.params.serverId,
+        normalizedName,
+        auth.userId,
+      );
       res.status(201).json({ channel });
     } catch {
       res.status(403).json({ error: 'Unable to create channel. Ensure you are a server member.' });
+    }
+  });
+
+  app.get('/servers/:serverId/members', async (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) {
+      return;
+    }
+
+    try {
+      const members = await deps.listServerMembers(req.params.serverId, auth.userId);
+      res.json({ members });
+    } catch {
+      res.status(403).json({ error: 'Unable to list members. Ensure you are a server member.' });
     }
   });
 
@@ -316,7 +369,9 @@ export function createApp(deps: AppDependencies) {
       return;
     }
 
-    const username = String(req.body?.username ?? '').trim().toLowerCase();
+    const username = String(req.body?.username ?? '')
+      .trim()
+      .toLowerCase();
     if (!username) {
       res.status(400).json({ error: 'username is required.' });
       return;

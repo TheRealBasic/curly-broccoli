@@ -20,9 +20,27 @@ export type ChannelSummary = {
   name: string;
 };
 
+export type ServerMember = {
+  userId: string;
+  username: string;
+  role: 'owner' | 'member';
+};
+
 export type ClientEvent =
   | {
       type: 'chat:join-channel';
+      payload: { channelId: string };
+    }
+  | {
+      type: 'presence:join-server';
+      payload: { serverId: string };
+    }
+  | {
+      type: 'typing:start';
+      payload: { channelId: string };
+    }
+  | {
+      type: 'typing:stop';
       payload: { channelId: string };
     }
   | {
@@ -46,6 +64,26 @@ export type ServerEvent =
   | {
       type: 'chat:message';
       payload: { message: ChatMessage };
+    }
+  | {
+      type: 'presence:sync';
+      payload: { serverId: string; onlineUserIds: string[] };
+    }
+  | {
+      type: 'presence:user-online';
+      payload: { serverId: string; userId: string };
+    }
+  | {
+      type: 'presence:user-offline';
+      payload: { serverId: string; userId: string };
+    }
+  | {
+      type: 'typing:start';
+      payload: { channelId: string; userId: string; username: string };
+    }
+  | {
+      type: 'typing:stop';
+      payload: { channelId: string; userId: string };
     }
   | {
       type: 'system';

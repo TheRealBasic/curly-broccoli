@@ -17,12 +17,14 @@ import {
   findRefreshToken,
   findUserById,
   findUserByUsername,
+  isMemberOfServer,
   listChannelsForServer,
+  listServerMembers,
   listServersForUser,
   revokeRefreshToken,
   runMigrations,
   saveMessage,
-  storeRefreshToken
+  storeRefreshToken,
 } from './db.js';
 
 dotenv.config();
@@ -42,7 +44,8 @@ const app = createApp({
   addServerMembership,
   listChannelsForServer,
   createChannel,
-  addMemberByUsername
+  addMemberByUsername,
+  listServerMembers,
 });
 const server = http.createServer(app);
 
@@ -53,6 +56,12 @@ const userByConnection = new Map<net.Socket, { userId: string; username: string 
 const activeChannelByConnection = new Map<net.Socket, string>();
 const sentTimestampsByConnection = new Map<net.Socket, number[]>();
 const readBufferByConnection = new Map<net.Socket, Buffer>();
+const serversByConnection = new Map<net.Socket, Set<string>>();
+const connectionsByServer = new Map<string, Set<net.Socket>>();
+const typingByChannel = new Map<
+  string,
+  Map<string, { username: string; connections: Set<net.Socket> }>
+>();
 
 function encodeFrame(text: string) {
   const payload = Buffer.from(text);
@@ -136,6 +145,13 @@ function broadcastToChannel(channelId: string, event: ServerEvent) {
   }
 }
 
+function broadcastToServer(serverId: string, event: ServerEvent) {
+  const frame = encodeFrame(JSON.stringify(event));
+  for (const socket of connectionsByServer.get(serverId) ?? []) {
+    socket.write(frame);
+  }
+}
+
 function isRateLimited(socket: net.Socket) {
   const now = Date.now();
   const timestamps = sentTimestampsByConnection.get(socket) ?? [];
@@ -151,12 +167,121 @@ function isRateLimited(socket: net.Socket) {
   return false;
 }
 
+function stopTypingForSocket(socket: net.Socket, channelId?: string) {
+  const currentUser = userByConnection.get(socket);
+  if (!currentUser) {
+    return;
+  }
+
+  const channelsToCheck = channelId ? [channelId] : Array.from(typingByChannel.keys());
+
+  for (const targetChannel of channelsToCheck) {
+    const channelState = typingByChannel.get(targetChannel);
+    if (!channelState) {
+      continue;
+    }
+
+    const userState = channelState.get(currentUser.userId);
+    if (!userState) {
+      continue;
+    }
+
+    userState.connections.delete(socket);
+    if (userState.connections.size === 0) {
+      channelState.delete(currentUser.userId);
+      broadcastToChannel(targetChannel, {
+        type: 'typing:stop',
+        payload: { channelId: targetChannel, userId: currentUser.userId },
+      });
+    }
+
+    if (channelState.size === 0) {
+      typingByChannel.delete(targetChannel);
+    }
+  }
+}
+
+function addPresenceSubscription(socket: net.Socket, serverId: string) {
+  const joinedServers = serversByConnection.get(socket) ?? new Set<string>();
+  if (joinedServers.has(serverId)) {
+    return;
+  }
+
+  joinedServers.add(serverId);
+  serversByConnection.set(socket, joinedServers);
+
+  const sockets = connectionsByServer.get(serverId) ?? new Set<net.Socket>();
+  const alreadyOnlineUserIds = new Set(
+    Array.from(sockets)
+      .map((client) => userByConnection.get(client)?.userId)
+      .filter((id): id is string => Boolean(id)),
+  );
+
+  sockets.add(socket);
+  connectionsByServer.set(serverId, sockets);
+
+  sendEvent(socket, {
+    type: 'presence:sync',
+    payload: {
+      serverId,
+      onlineUserIds: Array.from(alreadyOnlineUserIds),
+    },
+  });
+
+  const authUser = userByConnection.get(socket);
+  if (authUser) {
+    broadcastToServer(serverId, {
+      type: 'presence:user-online',
+      payload: { serverId, userId: authUser.userId },
+    });
+  }
+}
+
+function removePresenceSubscription(socket: net.Socket, serverId: string) {
+  const joinedServers = serversByConnection.get(socket);
+  joinedServers?.delete(serverId);
+
+  const sockets = connectionsByServer.get(serverId);
+  if (!sockets) {
+    return;
+  }
+
+  sockets.delete(socket);
+  if (sockets.size === 0) {
+    connectionsByServer.delete(serverId);
+  }
+
+  const authUser = userByConnection.get(socket);
+  if (!authUser) {
+    return;
+  }
+
+  const stillOnline = Array.from(sockets).some(
+    (client) => userByConnection.get(client)?.userId === authUser.userId,
+  );
+
+  if (!stillOnline) {
+    broadcastToServer(serverId, {
+      type: 'presence:user-offline',
+      payload: { serverId, userId: authUser.userId },
+    });
+  }
+}
+
 function closeConnection(socket: net.Socket) {
+  stopTypingForSocket(socket);
+
+  const serverIds = Array.from(serversByConnection.get(socket) ?? []);
+  for (const serverId of serverIds) {
+    removePresenceSubscription(socket, serverId);
+  }
+
   clients.delete(socket);
   userByConnection.delete(socket);
   activeChannelByConnection.delete(socket);
   sentTimestampsByConnection.delete(socket);
   readBufferByConnection.delete(socket);
+  serversByConnection.delete(socket);
 }
 
 async function handleJoinChannel(socket: net.Socket, channelId: string) {
@@ -172,7 +297,11 @@ async function handleJoinChannel(socket: net.Socket, channelId: string) {
     return;
   }
 
+  const previousChannelId = activeChannelByConnection.get(socket);
   activeChannelByConnection.set(socket, channelId);
+  if (previousChannelId && previousChannelId !== channelId) {
+    stopTypingForSocket(socket, previousChannelId);
+  }
   sendEvent(socket, { type: 'chat:joined-channel', payload: { channelId } });
 
   try {
@@ -181,7 +310,7 @@ async function handleJoinChannel(socket: net.Socket, channelId: string) {
   } catch {
     sendEvent(socket, {
       type: 'error',
-      payload: { message: 'Unable to load message history.' }
+      payload: { message: 'Unable to load message history.' },
     });
   }
 }
@@ -194,13 +323,97 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
   } catch {
     sendEvent(socket, {
       type: 'error',
-      payload: { message: 'Invalid JSON event.' }
+      payload: { message: 'Invalid JSON event.' },
     });
     return;
   }
 
   if (event.type === 'ping') {
     sendEvent(socket, { type: 'pong', payload: {} });
+    return;
+  }
+
+  if (event.type === 'presence:join-server') {
+    const currentUser = userByConnection.get(socket);
+    const serverId = event.payload?.serverId?.trim();
+    if (!currentUser || !serverId) {
+      sendEvent(socket, { type: 'error', payload: { message: 'serverId is required.' } });
+      return;
+    }
+
+    const allowed = await isMemberOfServer(serverId, currentUser.userId);
+    if (!allowed) {
+      sendEvent(socket, {
+        type: 'error',
+        payload: { message: 'You cannot join this server presence.' },
+      });
+      return;
+    }
+
+    addPresenceSubscription(socket, serverId);
+    return;
+  }
+
+  if (event.type === 'typing:start' || event.type === 'typing:stop') {
+    const currentUser = userByConnection.get(socket);
+    const channelId = event.payload?.channelId?.trim();
+    if (!currentUser || !channelId) {
+      sendEvent(socket, { type: 'error', payload: { message: 'channelId is required.' } });
+      return;
+    }
+
+    if (activeChannelByConnection.get(socket) !== channelId) {
+      sendEvent(socket, {
+        type: 'error',
+        payload: { message: 'Join the channel before sending typing indicators.' },
+      });
+      return;
+    }
+
+    const channelState = typingByChannel.get(channelId) ?? new Map();
+    const userState = channelState.get(currentUser.userId) ?? {
+      username: currentUser.username,
+      connections: new Set<net.Socket>(),
+    };
+
+    if (event.type === 'typing:start') {
+      const wasTyping = userState.connections.size > 0;
+      userState.connections.add(socket);
+      channelState.set(currentUser.userId, userState);
+      typingByChannel.set(channelId, channelState);
+
+      if (!wasTyping) {
+        broadcastToChannel(channelId, {
+          type: 'typing:start',
+          payload: {
+            channelId,
+            userId: currentUser.userId,
+            username: currentUser.username,
+          },
+        });
+      }
+    } else {
+      userState.connections.delete(socket);
+      if (userState.connections.size === 0) {
+        channelState.delete(currentUser.userId);
+        broadcastToChannel(channelId, {
+          type: 'typing:stop',
+          payload: {
+            channelId,
+            userId: currentUser.userId,
+          },
+        });
+      } else {
+        channelState.set(currentUser.userId, userState);
+      }
+
+      if (channelState.size === 0) {
+        typingByChannel.delete(channelId);
+      } else {
+        typingByChannel.set(channelId, channelState);
+      }
+    }
+
     return;
   }
 
@@ -218,7 +431,7 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
   if (event.type !== 'chat:send') {
     sendEvent(socket, {
       type: 'error',
-      payload: { message: 'Unsupported event type.' }
+      payload: { message: 'Unsupported event type.' },
     });
     return;
   }
@@ -227,7 +440,7 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
   if (!text) {
     sendEvent(socket, {
       type: 'error',
-      payload: { message: 'Message cannot be empty.' }
+      payload: { message: 'Message cannot be empty.' },
     });
     return;
   }
@@ -235,7 +448,7 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
   if (isRateLimited(socket)) {
     sendEvent(socket, {
       type: 'error',
-      payload: { message: 'Rate limit exceeded. Slow down a bit.' }
+      payload: { message: 'Rate limit exceeded. Slow down a bit.' },
     });
     return;
   }
@@ -244,7 +457,7 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
   if (!activeChannelId) {
     sendEvent(socket, {
       type: 'error',
-      payload: { message: 'Join a channel before sending messages.' }
+      payload: { message: 'Join a channel before sending messages.' },
     });
     return;
   }
@@ -255,19 +468,20 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
     channelId: activeChannelId,
     user: currentUser?.username ?? 'Anonymous',
     text,
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
   };
 
   try {
     const message = await saveMessage(messageToSave);
+    stopTypingForSocket(socket, activeChannelId);
     broadcastToChannel(activeChannelId, {
       type: 'chat:message',
-      payload: { message }
+      payload: { message },
     });
   } catch {
     sendEvent(socket, {
       type: 'error',
-      payload: { message: 'Unable to save your message right now.' }
+      payload: { message: 'Unable to save your message right now.' },
     });
   }
 }
@@ -297,21 +511,24 @@ server.on('upgrade', (req, socket) => {
     return;
   }
 
-  const accept = createHash('sha1').update(key + WEBSOCKET_GUID).digest('base64');
+  const accept = createHash('sha1')
+    .update(key + WEBSOCKET_GUID)
+    .digest('base64');
   socket.write(
     [
       'HTTP/1.1 101 Switching Protocols',
       'Upgrade: websocket',
       'Connection: Upgrade',
       `Sec-WebSocket-Accept: ${accept}`,
-      '\r\n'
-    ].join('\r\n')
+      '\r\n',
+    ].join('\r\n'),
   );
 
   clients.add(socket);
   userByConnection.set(socket, authUser);
   sentTimestampsByConnection.set(socket, []);
   readBufferByConnection.set(socket, Buffer.alloc(0));
+  serversByConnection.set(socket, new Set());
 
   sendEvent(socket, { type: 'system', payload: { text: `Connected as ${authUser.username}` } });
 

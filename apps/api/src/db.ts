@@ -2,7 +2,12 @@ import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Pool } from 'pg';
-import type { ChannelSummary, ChatMessage, ServerSummary } from '@curly-broccoli/shared';
+import type {
+  ChannelSummary,
+  ChatMessage,
+  ServerMember,
+  ServerSummary,
+} from '@curly-broccoli/shared';
 
 const DEFAULT_HISTORY_LIMIT = 50;
 
@@ -15,7 +20,7 @@ if (!databaseUrl) {
 }
 
 const pool = new Pool({
-  connectionString: databaseUrl
+  connectionString: databaseUrl,
 });
 
 type ChatMessageRow = {
@@ -52,13 +57,19 @@ type ChannelRow = {
   name: string;
 };
 
+type ServerMembershipRow = {
+  user_id: string;
+  username: string;
+  role: 'owner' | 'member';
+};
+
 function mapRow(row: ChatMessageRow): ChatMessage {
   return {
     id: row.id,
     channelId: row.channel_id,
     user: row.user_name,
     text: row.text,
-    createdAt: new Date(row.created_at).toISOString()
+    createdAt: new Date(row.created_at).toISOString(),
   };
 }
 
@@ -69,18 +80,20 @@ export async function runMigrations() {
         filename TEXT PRIMARY KEY,
         applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
-    `
+    `,
   );
 
   const currentFile = fileURLToPath(import.meta.url);
   const currentDir = path.dirname(currentFile);
   const migrationsDir = path.resolve(currentDir, '../migrations');
-  const migrationFiles = (await readdir(migrationsDir)).filter((name) => name.endsWith('.sql')).sort();
+  const migrationFiles = (await readdir(migrationsDir))
+    .filter((name) => name.endsWith('.sql'))
+    .sort();
 
   for (const filename of migrationFiles) {
     const alreadyApplied = await pool.query<{ filename: string }>(
       'SELECT filename FROM schema_migrations WHERE filename = $1',
-      [filename]
+      [filename],
     );
 
     if (alreadyApplied.rowCount) {
@@ -108,7 +121,7 @@ export async function createUser(id: string, username: string, passwordHash: str
       VALUES ($1, $2, $3)
       RETURNING id, username, password_hash;
     `,
-    [id, username, passwordHash]
+    [id, username, passwordHash],
   );
 
   return inserted.rows[0];
@@ -121,7 +134,7 @@ export async function findUserByUsername(username: string) {
       FROM users
       WHERE username = $1;
     `,
-    [username]
+    [username],
   );
 
   return result.rows[0] ?? null;
@@ -134,19 +147,24 @@ export async function findUserById(userId: string) {
       FROM users
       WHERE id = $1;
     `,
-    [userId]
+    [userId],
   );
 
   return result.rows[0] ?? null;
 }
 
-export async function storeRefreshToken(id: string, userId: string, tokenHash: string, expiresAt: string) {
+export async function storeRefreshToken(
+  id: string,
+  userId: string,
+  tokenHash: string,
+  expiresAt: string,
+) {
   await pool.query(
     `
       INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at)
       VALUES ($1, $2, $3, $4);
     `,
-    [id, userId, tokenHash, expiresAt]
+    [id, userId, tokenHash, expiresAt],
   );
 }
 
@@ -157,7 +175,7 @@ export async function findRefreshToken(tokenHash: string) {
       FROM refresh_tokens
       WHERE token_hash = $1;
     `,
-    [tokenHash]
+    [tokenHash],
   );
 
   return result.rows[0] ?? null;
@@ -170,7 +188,7 @@ export async function revokeRefreshToken(tokenHash: string) {
       SET revoked_at = NOW()
       WHERE token_hash = $1 AND revoked_at IS NULL;
     `,
-    [tokenHash]
+    [tokenHash],
   );
 }
 
@@ -181,21 +199,25 @@ export async function createServer(id: string, name: string, ownerId: string) {
       VALUES ($1, $2, $3)
       RETURNING id, name, owner_id;
     `,
-    [id, name, ownerId]
+    [id, name, ownerId],
   );
 
   const server = inserted.rows[0];
   return { id: server.id, name: server.name, ownerId: server.owner_id } satisfies ServerSummary;
 }
 
-export async function addServerMembership(serverId: string, userId: string, role: 'owner' | 'member') {
+export async function addServerMembership(
+  serverId: string,
+  userId: string,
+  role: 'owner' | 'member',
+) {
   await pool.query(
     `
       INSERT INTO server_memberships (server_id, user_id, role)
       VALUES ($1, $2, $3)
       ON CONFLICT (server_id, user_id) DO UPDATE SET role = EXCLUDED.role;
     `,
-    [serverId, userId, role]
+    [serverId, userId, role],
   );
 }
 
@@ -208,11 +230,11 @@ export async function listServersForUser(userId: string) {
       WHERE sm.user_id = $1
       ORDER BY s.created_at ASC;
     `,
-    [userId]
+    [userId],
   );
 
   return result.rows.map(
-    (row) => ({ id: row.id, name: row.name, ownerId: row.owner_id }) satisfies ServerSummary
+    (row) => ({ id: row.id, name: row.name, ownerId: row.owner_id }) satisfies ServerSummary,
   );
 }
 
@@ -228,14 +250,13 @@ export async function listChannelsForServer(serverId: string, userId: string) {
         )
       ORDER BY c.created_at ASC;
     `,
-    [serverId, userId]
+    [serverId, userId],
   );
 
   return result.rows.map(
-    (row) => ({ id: row.id, serverId: row.server_id, name: row.name }) satisfies ChannelSummary
+    (row) => ({ id: row.id, serverId: row.server_id, name: row.name }) satisfies ChannelSummary,
   );
 }
-
 
 export async function getMembershipRole(serverId: string, userId: string) {
   const result = await pool.query<{ role: 'owner' | 'member' }>(
@@ -244,7 +265,7 @@ export async function getMembershipRole(serverId: string, userId: string) {
       FROM server_memberships
       WHERE server_id = $1 AND user_id = $2;
     `,
-    [serverId, userId]
+    [serverId, userId],
   );
 
   return result.rows[0]?.role ?? null;
@@ -257,7 +278,7 @@ export async function isMemberOfServer(serverId: string, userId: string) {
       FROM server_memberships
       WHERE server_id = $1 AND user_id = $2;
     `,
-    [serverId, userId]
+    [serverId, userId],
   );
 
   return Boolean(result.rowCount);
@@ -275,13 +296,41 @@ export async function createChannel(id: string, serverId: string, name: string, 
       VALUES ($1, $2, $3)
       RETURNING id, server_id, name;
     `,
-    [id, serverId, name]
+    [id, serverId, name],
   );
 
   const channel = inserted.rows[0];
-  return { id: channel.id, serverId: channel.server_id, name: channel.name } satisfies ChannelSummary;
+  return {
+    id: channel.id,
+    serverId: channel.server_id,
+    name: channel.name,
+  } satisfies ChannelSummary;
 }
 
+export async function listServerMembers(serverId: string, userId: string) {
+  const membership = await isMemberOfServer(serverId, userId);
+  if (!membership) {
+    throw new Error('Not a member of server');
+  }
+
+  const result = await pool.query<ServerMembershipRow>(
+    `
+      SELECT sm.user_id, u.username, sm.role
+      FROM server_memberships sm
+      INNER JOIN users u ON u.id = sm.user_id
+      WHERE sm.server_id = $1
+      ORDER BY
+        CASE WHEN sm.role = 'owner' THEN 0 ELSE 1 END ASC,
+        u.username ASC;
+    `,
+    [serverId],
+  );
+
+  return result.rows.map(
+    (row) =>
+      ({ userId: row.user_id, username: row.username, role: row.role }) satisfies ServerMember,
+  );
+}
 
 export async function canAccessChannel(channelId: string, userId: string) {
   const result = await pool.query<{ found: number }>(
@@ -291,7 +340,7 @@ export async function canAccessChannel(channelId: string, userId: string) {
       INNER JOIN server_memberships sm ON sm.server_id = c.server_id
       WHERE c.id = $1 AND sm.user_id = $2;
     `,
-    [channelId, userId]
+    [channelId, userId],
   );
 
   return Boolean(result.rowCount);
@@ -319,7 +368,7 @@ export async function saveMessage(message: ChatMessage) {
       VALUES ($1, $2, $3, $4, $5)
       RETURNING id, channel_id, user_name, text, created_at;
     `,
-    [message.id, message.channelId, message.user, message.text, message.createdAt]
+    [message.id, message.channelId, message.user, message.text, message.createdAt],
   );
 
   return mapRow(inserted.rows[0]);
@@ -335,7 +384,7 @@ export async function fetchRecentMessages(channelId: string, limit = chatHistory
       ORDER BY created_at DESC
       LIMIT $2;
     `,
-    [channelId, safeLimit]
+    [channelId, safeLimit],
   );
 
   return rows.rows.reverse().map(mapRow);

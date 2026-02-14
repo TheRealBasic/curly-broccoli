@@ -136,6 +136,17 @@ type AppDependencies = {
     model: string;
     systemPrompt: string | null;
     maxTokensPerReply: number | null;
+    maxPromptChars: number | null;
+    maxCompletionTokens: number | null;
+    rateLimitUserRequests: number | null;
+    rateLimitServerRequests: number | null;
+    rateLimitWindowSeconds: number | null;
+    burstLimitRequests: number | null;
+    burstWindowSeconds: number | null;
+    dailyTokenBudget: number | null;
+    monthlyTokenBudget: number | null;
+    autoDisableOnBudgetExceeded: boolean;
+    disabledReason: string | null;
     temperature: number | null;
     allowDmInvocation: boolean;
   } | null>;
@@ -148,6 +159,17 @@ type AppDependencies = {
       model?: string;
       systemPrompt?: string | null;
       maxTokensPerReply?: number | null;
+      maxPromptChars?: number | null;
+      maxCompletionTokens?: number | null;
+      rateLimitUserRequests?: number | null;
+      rateLimitServerRequests?: number | null;
+      rateLimitWindowSeconds?: number | null;
+      burstLimitRequests?: number | null;
+      burstWindowSeconds?: number | null;
+      dailyTokenBudget?: number | null;
+      monthlyTokenBudget?: number | null;
+      autoDisableOnBudgetExceeded?: boolean;
+      disabledReason?: string | null;
       temperature?: number | null;
       allowDmInvocation?: boolean;
     },
@@ -1498,6 +1520,17 @@ export function createApp(deps: AppDependencies) {
       model?: string;
       systemPrompt?: string | null;
       maxTokensPerReply?: number | null;
+      maxPromptChars?: number | null;
+      maxCompletionTokens?: number | null;
+      rateLimitUserRequests?: number | null;
+      rateLimitServerRequests?: number | null;
+      rateLimitWindowSeconds?: number | null;
+      burstLimitRequests?: number | null;
+      burstWindowSeconds?: number | null;
+      dailyTokenBudget?: number | null;
+      monthlyTokenBudget?: number | null;
+      autoDisableOnBudgetExceeded?: boolean;
+      disabledReason?: string | null;
       temperature?: number | null;
       allowDmInvocation?: boolean;
     } = {};
@@ -1540,6 +1573,95 @@ export function createApp(deps: AppDependencies) {
         return;
       }
       patch.maxTokensPerReply = req.body.maxTokensPerReply;
+    }
+
+
+    if ('maxPromptChars' in req.body) {
+      if (req.body.maxPromptChars !== null && (!Number.isInteger(req.body.maxPromptChars) || req.body.maxPromptChars <= 0)) {
+        res.status(400).json({ error: 'maxPromptChars must be a positive integer or null.' });
+        return;
+      }
+      patch.maxPromptChars = req.body.maxPromptChars;
+    }
+
+    if ('maxCompletionTokens' in req.body) {
+      if (req.body.maxCompletionTokens !== null && (!Number.isInteger(req.body.maxCompletionTokens) || req.body.maxCompletionTokens <= 0)) {
+        res.status(400).json({ error: 'maxCompletionTokens must be a positive integer or null.' });
+        return;
+      }
+      patch.maxCompletionTokens = req.body.maxCompletionTokens;
+    }
+
+    if ('rateLimitUserRequests' in req.body) {
+      if (req.body.rateLimitUserRequests !== null && (!Number.isInteger(req.body.rateLimitUserRequests) || req.body.rateLimitUserRequests <= 0)) {
+        res.status(400).json({ error: 'rateLimitUserRequests must be a positive integer or null.' });
+        return;
+      }
+      patch.rateLimitUserRequests = req.body.rateLimitUserRequests;
+    }
+
+    if ('rateLimitServerRequests' in req.body) {
+      if (req.body.rateLimitServerRequests !== null && (!Number.isInteger(req.body.rateLimitServerRequests) || req.body.rateLimitServerRequests <= 0)) {
+        res.status(400).json({ error: 'rateLimitServerRequests must be a positive integer or null.' });
+        return;
+      }
+      patch.rateLimitServerRequests = req.body.rateLimitServerRequests;
+    }
+
+    if ('rateLimitWindowSeconds' in req.body) {
+      if (req.body.rateLimitWindowSeconds !== null && (!Number.isInteger(req.body.rateLimitWindowSeconds) || req.body.rateLimitWindowSeconds <= 0)) {
+        res.status(400).json({ error: 'rateLimitWindowSeconds must be a positive integer or null.' });
+        return;
+      }
+      patch.rateLimitWindowSeconds = req.body.rateLimitWindowSeconds;
+    }
+
+    if ('burstLimitRequests' in req.body) {
+      if (req.body.burstLimitRequests !== null && (!Number.isInteger(req.body.burstLimitRequests) || req.body.burstLimitRequests <= 0)) {
+        res.status(400).json({ error: 'burstLimitRequests must be a positive integer or null.' });
+        return;
+      }
+      patch.burstLimitRequests = req.body.burstLimitRequests;
+    }
+
+    if ('burstWindowSeconds' in req.body) {
+      if (req.body.burstWindowSeconds !== null && (!Number.isInteger(req.body.burstWindowSeconds) || req.body.burstWindowSeconds <= 0)) {
+        res.status(400).json({ error: 'burstWindowSeconds must be a positive integer or null.' });
+        return;
+      }
+      patch.burstWindowSeconds = req.body.burstWindowSeconds;
+    }
+
+    if ('dailyTokenBudget' in req.body) {
+      if (req.body.dailyTokenBudget !== null && (!Number.isInteger(req.body.dailyTokenBudget) || req.body.dailyTokenBudget <= 0)) {
+        res.status(400).json({ error: 'dailyTokenBudget must be a positive integer or null.' });
+        return;
+      }
+      patch.dailyTokenBudget = req.body.dailyTokenBudget;
+    }
+
+    if ('monthlyTokenBudget' in req.body) {
+      if (req.body.monthlyTokenBudget !== null && (!Number.isInteger(req.body.monthlyTokenBudget) || req.body.monthlyTokenBudget <= 0)) {
+        res.status(400).json({ error: 'monthlyTokenBudget must be a positive integer or null.' });
+        return;
+      }
+      patch.monthlyTokenBudget = req.body.monthlyTokenBudget;
+    }
+
+    if ('autoDisableOnBudgetExceeded' in req.body) {
+      if (typeof req.body.autoDisableOnBudgetExceeded !== 'boolean') {
+        res.status(400).json({ error: 'autoDisableOnBudgetExceeded must be a boolean.' });
+        return;
+      }
+      patch.autoDisableOnBudgetExceeded = req.body.autoDisableOnBudgetExceeded;
+    }
+
+    if ('disabledReason' in req.body) {
+      if (req.body.disabledReason !== null && typeof req.body.disabledReason !== 'string') {
+        res.status(400).json({ error: 'disabledReason must be a string or null.' });
+        return;
+      }
+      patch.disabledReason = req.body.disabledReason;
     }
 
     if ('temperature' in req.body) {

@@ -64,6 +64,9 @@ import {
   writeModerationAuditLog,
   getServerAudioSettingsByChannel,
   getServerAiSettings,
+  disableServerAiDueToBudget,
+  getServerAiBudgetUsage,
+  recordServerAiUsage,
   updateServerAudioSettings,
   updateServerAiSettings,
 } from './db.js';
@@ -130,6 +133,18 @@ const RATE_LIMIT_MAX_MESSAGES = 6;
 const SOUNDBOARD_RATE_LIMIT_WINDOW_MS = 5_000;
 const SOUNDBOARD_RATE_LIMIT_MAX_EVENTS = 5;
 const AI_INVOKE_COOLDOWN_MS = 2_500;
+const DEFAULT_AI_RATE_LIMIT_WINDOW_SECONDS = 60;
+const DEFAULT_AI_USER_REQUEST_LIMIT = 4;
+const DEFAULT_AI_SERVER_REQUEST_LIMIT = 20;
+const DEFAULT_AI_BURST_WINDOW_SECONDS = 10;
+const DEFAULT_AI_BURST_LIMIT = 3;
+const DEFAULT_AI_MAX_PROMPT_CHARS = 2_000;
+const BLOCKED_AI_CONTENT_PATTERNS: Array<{ category: string; pattern: RegExp }> = [
+  { category: 'self_harm', pattern: /(?:how\s+to\s+)?(?:self[-\s]?harm|suicide|kill\s+myself)/i },
+  { category: 'extremism', pattern: /\b(build|make)\s+(?:a\s+)?(?:bomb|explosive)\b/i },
+  { category: 'hate', pattern: /\b(?:racial\s+slur|genocide\s+support)\b/i },
+];
+
 const clients = new Set<net.Socket>();
 const userByConnection = new Map<net.Socket, { userId: string; username: string }>();
 const activeChannelByConnection = new Map<net.Socket, string>();
@@ -148,6 +163,9 @@ const typingByChannel = new Map<
 >();
 const aiPendingByChannel = new Set<string>();
 const aiLastInvokeByUserChannel = new Map<string, number>();
+const aiRequestTimestampsByUserServer = new Map<string, number[]>();
+const aiRequestTimestampsByServer = new Map<string, number[]>();
+const aiBurstTimestampsByServer = new Map<string, number[]>();
 const voiceConnectionsByChannel = new Map<string, Set<net.Socket>>();
 const voiceChannelByConnection = new Map<net.Socket, string>();
 const screenPresenterByChannel = new Map<string, string>();
@@ -217,6 +235,87 @@ function parseAiInvocation(text: string, botDisplayName: string): string | null 
 }
 
 
+
+
+type AiGuardrailError = {
+  code: 'ai_throttled' | 'ai_budget_exceeded' | 'ai_prompt_too_long' | 'ai_policy_blocked';
+  message: string;
+};
+
+function trimRecentTimestamps(timestamps: number[], windowMs: number, now: number) {
+  const threshold = now - windowMs;
+  while (timestamps.length > 0 && timestamps[0] < threshold) {
+    timestamps.shift();
+  }
+}
+
+function checkPromptPolicy(prompt: string): { blocked: true; category: string } | { blocked: false } {
+  for (const rule of BLOCKED_AI_CONTENT_PATTERNS) {
+    if (rule.pattern.test(prompt)) {
+      return { blocked: true, category: rule.category };
+    }
+  }
+
+  return { blocked: false };
+}
+
+function guardAiRateLimits(input: {
+  serverId: string;
+  userId: string;
+  settings: {
+    rateLimitUserRequests: number | null;
+    rateLimitServerRequests: number | null;
+    rateLimitWindowSeconds: number | null;
+    burstLimitRequests: number | null;
+    burstWindowSeconds: number | null;
+  };
+}): AiGuardrailError | null {
+  const now = Date.now();
+  const windowMs = (input.settings.rateLimitWindowSeconds ?? DEFAULT_AI_RATE_LIMIT_WINDOW_SECONDS) * 1000;
+  const burstWindowMs = (input.settings.burstWindowSeconds ?? DEFAULT_AI_BURST_WINDOW_SECONDS) * 1000;
+  const userLimit = input.settings.rateLimitUserRequests ?? DEFAULT_AI_USER_REQUEST_LIMIT;
+  const serverLimit = input.settings.rateLimitServerRequests ?? DEFAULT_AI_SERVER_REQUEST_LIMIT;
+  const burstLimit = input.settings.burstLimitRequests ?? DEFAULT_AI_BURST_LIMIT;
+
+  const userKey = `${input.serverId}:${input.userId}`;
+  const userTimestamps = aiRequestTimestampsByUserServer.get(userKey) ?? [];
+  trimRecentTimestamps(userTimestamps, windowMs, now);
+  if (userTimestamps.length >= userLimit) {
+    aiRequestTimestampsByUserServer.set(userKey, userTimestamps);
+    return {
+      code: 'ai_throttled',
+      message: 'You are sending AI requests too quickly. Please wait a moment and try again.',
+    };
+  }
+
+  const serverTimestamps = aiRequestTimestampsByServer.get(input.serverId) ?? [];
+  trimRecentTimestamps(serverTimestamps, windowMs, now);
+  if (serverTimestamps.length >= serverLimit) {
+    aiRequestTimestampsByServer.set(input.serverId, serverTimestamps);
+    return {
+      code: 'ai_throttled',
+      message: 'AI is currently busy for this server. Please try again shortly.',
+    };
+  }
+
+  const burstTimestamps = aiBurstTimestampsByServer.get(input.serverId) ?? [];
+  trimRecentTimestamps(burstTimestamps, burstWindowMs, now);
+  if (burstTimestamps.length >= burstLimit) {
+    aiBurstTimestampsByServer.set(input.serverId, burstTimestamps);
+    return {
+      code: 'ai_throttled',
+      message: 'Too many AI requests in a short burst. Please slow down.',
+    };
+  }
+
+  userTimestamps.push(now);
+  serverTimestamps.push(now);
+  burstTimestamps.push(now);
+  aiRequestTimestampsByUserServer.set(userKey, userTimestamps);
+  aiRequestTimestampsByServer.set(input.serverId, serverTimestamps);
+  aiBurstTimestampsByServer.set(input.serverId, burstTimestamps);
+  return null;
+}
 
 function parseCsvSet(raw: string | undefined) {
   if (!raw) {
@@ -1551,124 +1650,214 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
       !aiPendingByChannel.has(activeChannelId) &&
       currentUser.username.toLowerCase() !== botDisplayName.toLowerCase()
     ) {
-      const channelAllowed = await canAccessChannel(activeChannelId, currentUser.userId);
-      const rateLimitKey = `${currentUser.userId}:${activeChannelId}`;
-      const now = Date.now();
-      const lastInvocationAt = aiLastInvokeByUserChannel.get(rateLimitKey) ?? 0;
-
-      if (channelAllowed && now - lastInvocationAt >= AI_INVOKE_COOLDOWN_MS) {
-        aiLastInvokeByUserChannel.set(rateLimitKey, now);
-        aiPendingByChannel.add(activeChannelId);
-
-        const requestId = randomUUID();
+      if (aiSettings.disabledReason) {
         broadcastToChannel(activeChannelId, {
-          type: 'chat:bot-pending',
+          type: 'ai:reply-error',
           payload: {
             channelId: activeChannelId,
-            requestId,
-            requestedByUserId: currentUser.userId,
-            botDisplayName,
+            requestId: randomUUID(),
+            message: `AI is disabled for this server: ${aiSettings.disabledReason}`,
           },
         });
+      } else {
+        const channelAllowed = await canAccessChannel(activeChannelId, currentUser.userId);
+        const rateLimitKey = `${currentUser.userId}:${activeChannelId}`;
+        const now = Date.now();
+        const lastInvocationAt = aiLastInvokeByUserChannel.get(rateLimitKey) ?? 0;
 
-        void (async () => {
-          try {
-            let hasStreamedChunks = false;
+        const promptLimit = aiSettings.maxPromptChars ?? DEFAULT_AI_MAX_PROMPT_CHARS;
+        const overPromptLimit = prompt.length > promptLimit;
+        const policy = checkPromptPolicy(prompt);
+        const throttleError = guardAiRateLimits({
+          serverId: server.server_id,
+          userId: currentUser.userId,
+          settings: aiSettings,
+        });
 
-            broadcastToChannel(activeChannelId, {
-              type: 'ai:reply-start',
-              payload: {
-                channelId: activeChannelId,
-                requestId,
-                requestedByUserId: currentUser.userId,
-                botDisplayName,
-              },
-            });
-
-            const aiResult = await requestChannelAiReply(
-              {
-                requestId,
-                serverId: server.server_id,
-                channelId: activeChannelId,
-                requesterUserId: currentUser.userId,
-                requesterUsername: currentUser.username,
-                botDisplayName,
-                question: prompt,
-                recentMessages: await fetchRecentMessages(activeChannelId, 20),
-                model: aiSettings.model,
-                systemPrompt: aiSettings.systemPrompt,
-                maxTokensPerReply: aiSettings.maxTokensPerReply,
-                temperature: aiSettings.temperature,
-              },
-              {
-                onChunk: (chunk) => {
-                  hasStreamedChunks = true;
-                  broadcastToChannel(activeChannelId, {
-                    type: 'ai:reply-chunk',
-                    payload: {
-                      channelId: activeChannelId,
-                      requestId,
-                      chunk,
-                    },
-                  });
-                },
-              },
-            );
-
-            if (!aiResult.ok || !aiResult.value.outputText.trim()) {
-              broadcastToChannel(activeChannelId, {
-                type: 'ai:reply-error',
-                payload: {
-                  channelId: activeChannelId,
-                  requestId,
-                  message: aiResult.ok ? 'AI produced an empty reply.' : aiResult.error.message,
-                },
-              });
-              return;
-            }
-
-            const botMessage = await saveMessage({
-              id: randomUUID(),
-              channelId: activeChannelId,
-              userId: null,
-              user: botDisplayName,
-              text: aiResult.value.outputText.trim(),
-              createdAt: new Date().toISOString(),
-              attachmentIds: [],
-            });
-
-            if (!hasStreamedChunks) {
-              broadcastToChannel(activeChannelId, {
-                type: 'ai:reply-chunk',
-                payload: {
-                  channelId: activeChannelId,
-                  requestId,
-                  chunk: botMessage.text,
-                },
-              });
-            }
-
-            broadcastToChannel(activeChannelId, {
-              type: 'ai:reply-complete',
-              payload: {
-                channelId: activeChannelId,
-                requestId,
-                message: botMessage,
-              },
-            });
-
-            broadcastToChannel(activeChannelId, {
-              type: 'chat:message',
-              payload: { message: botMessage },
-            });
-          } catch (error) {
-            console.error('Failed to process AI channel invocation.', error);
-          } finally {
-            aiPendingByChannel.delete(activeChannelId);
+        let budgetError: AiGuardrailError | null = null;
+        if (!throttleError && aiSettings.enabled && (aiSettings.dailyTokenBudget || aiSettings.monthlyTokenBudget)) {
+          const usage = await getServerAiBudgetUsage(server.server_id);
+          if (aiSettings.dailyTokenBudget && usage.dailyTokensUsed >= aiSettings.dailyTokenBudget) {
+            budgetError = {
+              code: 'ai_budget_exceeded',
+              message: 'AI is temporarily unavailable: this server reached its daily token budget.',
+            };
+          } else if (aiSettings.monthlyTokenBudget && usage.monthlyTokensUsed >= aiSettings.monthlyTokenBudget) {
+            budgetError = {
+              code: 'ai_budget_exceeded',
+              message: 'AI is temporarily unavailable: this server reached its monthly token budget.',
+            };
           }
-        })();
+
+          if (budgetError && aiSettings.autoDisableOnBudgetExceeded) {
+            await disableServerAiDueToBudget(server.server_id, budgetError.message);
+          }
+        }
+
+        let guardrailError: AiGuardrailError | null = null;
+        if (overPromptLimit) {
+          guardrailError = {
+            code: 'ai_prompt_too_long',
+            message: `Your AI prompt is too long. Please keep it under ${promptLimit} characters.`,
+          };
+        } else if (policy.blocked) {
+          guardrailError = {
+            code: 'ai_policy_blocked',
+            message: `Your request was blocked by policy checks (${policy.category}). Please rephrase your question.`,
+          };
+        } else if (throttleError) {
+          guardrailError = throttleError;
+        } else if (budgetError) {
+          guardrailError = budgetError;
+        }
+
+        if (guardrailError) {
+          broadcastToChannel(activeChannelId, {
+            type: 'ai:reply-error',
+            payload: {
+              channelId: activeChannelId,
+              requestId: randomUUID(),
+              message: guardrailError.message,
+            },
+          });
+        } else if (channelAllowed && now - lastInvocationAt >= AI_INVOKE_COOLDOWN_MS) {
+          aiLastInvokeByUserChannel.set(rateLimitKey, now);
+          aiPendingByChannel.add(activeChannelId);
+
+          const requestId = randomUUID();
+          broadcastToChannel(activeChannelId, {
+            type: 'chat:bot-pending',
+            payload: {
+              channelId: activeChannelId,
+              requestId,
+              requestedByUserId: currentUser.userId,
+              botDisplayName,
+            },
+          });
+
+          void (async () => {
+            const startedAt = Date.now();
+            try {
+              let hasStreamedChunks = false;
+
+              broadcastToChannel(activeChannelId, {
+                type: 'ai:reply-start',
+                payload: {
+                  channelId: activeChannelId,
+                  requestId,
+                  requestedByUserId: currentUser.userId,
+                  botDisplayName,
+                },
+              });
+
+              const aiResult = await requestChannelAiReply(
+                {
+                  requestId,
+                  serverId: server.server_id,
+                  channelId: activeChannelId,
+                  requesterUserId: currentUser.userId,
+                  requesterUsername: currentUser.username,
+                  botDisplayName,
+                  question: prompt,
+                  recentMessages: await fetchRecentMessages(activeChannelId, 20),
+                  model: aiSettings.model,
+                  systemPrompt: aiSettings.systemPrompt,
+                  maxTokensPerReply: aiSettings.maxTokensPerReply,
+                  maxCompletionTokens: aiSettings.maxCompletionTokens,
+                  temperature: aiSettings.temperature,
+                },
+                {
+                  onChunk: (chunk) => {
+                    hasStreamedChunks = true;
+                    broadcastToChannel(activeChannelId, {
+                      type: 'ai:reply-chunk',
+                      payload: {
+                        channelId: activeChannelId,
+                        requestId,
+                        chunk,
+                      },
+                    });
+                  },
+                },
+              );
+
+              if (!aiResult.ok || !aiResult.value.outputText.trim()) {
+                await recordServerAiUsage({
+                  serverId: server.server_id,
+                  requestCount: 1,
+                  failureCount: 1,
+                  latencyMs: Date.now() - startedAt,
+                });
+                broadcastToChannel(activeChannelId, {
+                  type: 'ai:reply-error',
+                  payload: {
+                    channelId: activeChannelId,
+                    requestId,
+                    message: aiResult.ok ? 'AI produced an empty reply.' : aiResult.error.message,
+                  },
+                });
+                return;
+              }
+
+              const botMessage = await saveMessage({
+                id: randomUUID(),
+                channelId: activeChannelId,
+                userId: null,
+                user: botDisplayName,
+                text: aiResult.value.outputText.trim(),
+                createdAt: new Date().toISOString(),
+                attachmentIds: [],
+              });
+
+              await recordServerAiUsage({
+                serverId: server.server_id,
+                requestCount: 1,
+                inputTokens: aiResult.value.usage.inputTokens,
+                outputTokens: aiResult.value.usage.outputTokens,
+                totalTokens: aiResult.value.usage.totalTokens,
+                latencyMs: Date.now() - startedAt,
+              });
+
+              if (!hasStreamedChunks) {
+                broadcastToChannel(activeChannelId, {
+                  type: 'ai:reply-chunk',
+                  payload: {
+                    channelId: activeChannelId,
+                    requestId,
+                    chunk: botMessage.text,
+                  },
+                });
+              }
+
+              broadcastToChannel(activeChannelId, {
+                type: 'ai:reply-complete',
+                payload: {
+                  channelId: activeChannelId,
+                  requestId,
+                  message: botMessage,
+                },
+              });
+
+              broadcastToChannel(activeChannelId, {
+                type: 'chat:message',
+                payload: { message: botMessage },
+              });
+            } catch (error) {
+              await recordServerAiUsage({
+                serverId: server.server_id,
+                requestCount: 1,
+                failureCount: 1,
+                latencyMs: Date.now() - startedAt,
+              });
+              console.error('Failed to process AI channel invocation.', error);
+            } finally {
+              aiPendingByChannel.delete(activeChannelId);
+            }
+          })();
+        }
       }
     }
+
 
     try {
       const members = await listServerMembers(server.server_id, currentUser.userId);

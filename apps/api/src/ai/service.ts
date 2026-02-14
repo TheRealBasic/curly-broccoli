@@ -14,6 +14,7 @@ export type ChannelAiRequest = {
   model: string;
   systemPrompt: string | null;
   maxTokensPerReply: number | null;
+  maxCompletionTokens: number | null;
   temperature: number | null;
 };
 
@@ -34,7 +35,7 @@ export async function requestChannelAiReply(
     mode: 'responses' as const,
     model: input.model,
     messages: context.messages,
-    maxTokens: clampMaxReplyTokens(input.maxTokensPerReply),
+    maxTokens: clampMaxReplyTokens(Math.min(input.maxTokensPerReply ?? Infinity, input.maxCompletionTokens ?? Infinity)),
     temperature: input.temperature ?? undefined,
     metadata: {
       feature: 'channel_chat_invocation',

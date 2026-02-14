@@ -73,6 +73,7 @@ type ScreenEncodingPreset = {
 
 const AUTH_STORAGE_KEY = 'curly_broccoli_auth';
 const DESKTOP_NOTIFICATIONS_STORAGE_KEY = 'curly_broccoli_desktop_notifications_enabled';
+const SPATIAL_AUDIO_STORAGE_KEY = 'curly_broccoli_spatial_audio_enabled';
 const TYPING_STOP_DELAY_MS = 1200;
 const HEARTBEAT_INTERVAL_MS = 10_000;
 const HEARTBEAT_TIMEOUT_MS = 20_000;
@@ -92,6 +93,22 @@ type MentionSegment = {
   text: string;
   mentioned: boolean;
 };
+
+type RemoteAudioNodes = {
+  stream: MediaStream;
+  source: MediaStreamAudioSourceNode;
+  analyser: AnalyserNode;
+  spatial: boolean;
+  panner: PannerNode | null;
+  gain: GainNode | null;
+};
+
+export function disposeRemoteAudioNodes(nodes: RemoteAudioNodes) {
+  nodes.source.disconnect();
+  nodes.analyser.disconnect();
+  nodes.panner?.disconnect();
+  nodes.gain?.disconnect();
+}
 
 function loadAuthState() {
   const raw = localStorage.getItem(AUTH_STORAGE_KEY);
@@ -122,6 +139,30 @@ function loadDesktopNotificationsEnabled() {
 
 function saveDesktopNotificationsEnabled(value: boolean) {
   localStorage.setItem(DESKTOP_NOTIFICATIONS_STORAGE_KEY, String(value));
+}
+
+function loadSpatialAudioEnabled() {
+  return localStorage.getItem(SPATIAL_AUDIO_STORAGE_KEY) === 'true';
+}
+
+function saveSpatialAudioEnabled(value: boolean) {
+  localStorage.setItem(SPATIAL_AUDIO_STORAGE_KEY, String(value));
+}
+
+export function getSpatialPositionFromIndex(index: number, total: number) {
+  if (total <= 1) {
+    return { x: 0, y: 0, z: -1.5 };
+  }
+
+  const spreadStart = -Math.PI / 3;
+  const spreadEnd = Math.PI / 3;
+  const angle = spreadStart + (index / (total - 1)) * (spreadEnd - spreadStart);
+  const radius = 1.8;
+  return {
+    x: Math.sin(angle) * radius,
+    y: 0,
+    z: -Math.cos(angle) * radius,
+  };
 }
 
 function parseMentionSegments(text: string) {
@@ -197,6 +238,7 @@ export function App() {
     disconnectCauses: {},
   });
   const remoteAudioContextRef = useRef<AudioContext | null>(null);
+  const remoteAudioNodesByUserIdRef = useRef<Map<string, RemoteAudioNodes>>(new Map());
   const speakingIntervalRef = useRef<number | null>(null);
   const localSpeakingAnalyserRef = useRef<AnalyserNode | null>(null);
   const localSpeakingDataRef = useRef<Uint8Array | null>(null);
@@ -270,6 +312,7 @@ export function App() {
   const [desktopNotificationsEnabled, setDesktopNotificationsEnabled] = useState(() =>
     loadDesktopNotificationsEnabled(),
   );
+  const [spatialAudioEnabled, setSpatialAudioEnabled] = useState(() => loadSpatialAudioEnabled());
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermissionState>(
     () =>
       typeof window !== 'undefined' && 'Notification' in window
@@ -336,6 +379,22 @@ export function App() {
     saveDesktopNotificationsEnabled(desktopNotificationsEnabled);
   }, [desktopNotificationsEnabled]);
 
+  const spatialAudioAvailable = useMemo(() => {
+    const AudioContextCtor =
+      window.AudioContext ||
+      (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    return !!AudioContextCtor;
+  }, []);
+
+  useEffect(() => {
+    if (!spatialAudioAvailable && spatialAudioEnabled) {
+      setSpatialAudioEnabled(false);
+      return;
+    }
+
+    saveSpatialAudioEnabled(spatialAudioEnabled);
+  }, [spatialAudioAvailable, spatialAudioEnabled]);
+
   useEffect(() => {
     notificationPermissionRef.current = notificationPermission;
   }, [notificationPermission]);
@@ -350,9 +409,48 @@ export function App() {
 
   useEffect(() => {
     for (const [userId, audio] of remoteAudioByUserIdRef.current.entries()) {
-      audio.volume = (outputVolumeByUserId[userId] ?? 100) / 100;
+      const gain = (outputVolumeByUserId[userId] ?? 100) / 100;
+      const remoteNodes = remoteAudioNodesByUserIdRef.current.get(userId);
+      if (remoteNodes?.gain) {
+        remoteNodes.gain.gain.value = gain;
+      } else {
+        audio.volume = gain;
+      }
     }
   }, [outputVolumeByUserId]);
+
+  const remoteVoiceParticipants = useMemo(() => {
+    if (!voiceChannelId) {
+      return [];
+    }
+
+    return (voiceParticipantsByChannel[voiceChannelId] ?? [])
+      .filter((participant) => participant.userId !== auth?.user.id)
+      .sort((a, b) => a.userId.localeCompare(b.userId));
+  }, [auth?.user.id, voiceChannelId, voiceParticipantsByChannel]);
+
+  useEffect(() => {
+    if (!spatialAudioEnabled || !remoteAudioContextRef.current) {
+      return;
+    }
+
+    const now = remoteAudioContextRef.current.currentTime;
+    for (const [index, participant] of remoteVoiceParticipants.entries()) {
+      const nodes = remoteAudioNodesByUserIdRef.current.get(participant.userId);
+      if (!nodes?.spatial || !nodes.panner) {
+        continue;
+      }
+
+      const position = getSpatialPositionFromIndex(index, remoteVoiceParticipants.length);
+      if ('positionX' in nodes.panner && nodes.panner.positionX) {
+        nodes.panner.positionX.setTargetAtTime(position.x, now, 0.2);
+        nodes.panner.positionY.setTargetAtTime(position.y, now, 0.2);
+        nodes.panner.positionZ.setTargetAtTime(position.z, now, 0.2);
+      } else {
+        nodes.panner.setPosition(position.x, position.y, position.z);
+      }
+    }
+  }, [remoteVoiceParticipants, spatialAudioEnabled]);
 
   useEffect(() => {
     const socket = socketRef.current;
@@ -483,6 +581,11 @@ export function App() {
       audio.pause();
       audio.srcObject = null;
       remoteAudioByUserIdRef.current.delete(userId);
+    }
+    const nodes = remoteAudioNodesByUserIdRef.current.get(userId);
+    if (nodes) {
+      disposeRemoteAudioNodes(nodes);
+      remoteAudioNodesByUserIdRef.current.delete(userId);
     }
     remoteSpeakingAnalyserByUserIdRef.current.delete(userId);
     remoteSpeakingDataByUserIdRef.current.delete(userId);
@@ -871,15 +974,78 @@ export function App() {
       }
 
       audio.srcObject = remoteStream;
-      audio.volume = (outputVolumeByUserId[targetUserId] ?? 100) / 100;
+      const hasSpatialSupport = spatialAudioEnabled && remoteAudioContextRef.current;
+      const existingNodes = remoteAudioNodesByUserIdRef.current.get(targetUserId);
+      if (existingNodes) {
+        disposeRemoteAudioNodes(existingNodes);
+        remoteAudioNodesByUserIdRef.current.delete(targetUserId);
+      }
 
-      if (remoteAudioContextRef.current) {
-        const source = remoteAudioContextRef.current.createMediaStreamSource(remoteStream);
-        const analyser = remoteAudioContextRef.current.createAnalyser();
+      if (hasSpatialSupport && remoteAudioContextRef.current) {
+        const context = remoteAudioContextRef.current;
+        const source = context.createMediaStreamSource(remoteStream);
+        const panner = context.createPanner();
+        panner.panningModel = 'HRTF';
+        panner.distanceModel = 'inverse';
+        panner.refDistance = 1;
+        panner.maxDistance = 15;
+        panner.rolloffFactor = 1;
+        const gain = context.createGain();
+        gain.gain.value = (outputVolumeByUserId[targetUserId] ?? 100) / 100;
+        const analyser = context.createAnalyser();
         analyser.fftSize = 512;
-        source.connect(analyser);
+
+        source.connect(panner);
+        panner.connect(gain);
+        gain.connect(analyser);
+        gain.connect(context.destination);
+        const participantIndex = remoteVoiceParticipants.findIndex(
+          (participant) => participant.userId === targetUserId,
+        );
+        const position = getSpatialPositionFromIndex(
+          participantIndex >= 0 ? participantIndex : 0,
+          Math.max(remoteVoiceParticipants.length, 1),
+        );
+        if ('positionX' in panner && panner.positionX) {
+          panner.positionX.value = position.x;
+          panner.positionY.value = position.y;
+          panner.positionZ.value = position.z;
+        } else {
+          panner.setPosition(position.x, position.y, position.z);
+        }
+        audio.volume = 1;
+        audio.muted = true;
+
+        remoteAudioNodesByUserIdRef.current.set(targetUserId, {
+          stream: remoteStream,
+          source,
+          analyser,
+          spatial: true,
+          panner,
+          gain,
+        });
         remoteSpeakingAnalyserByUserIdRef.current.set(targetUserId, analyser);
         remoteSpeakingDataByUserIdRef.current.set(targetUserId, new Uint8Array(analyser.fftSize));
+      } else {
+        audio.muted = false;
+        audio.volume = (outputVolumeByUserId[targetUserId] ?? 100) / 100;
+
+        if (remoteAudioContextRef.current) {
+          const source = remoteAudioContextRef.current.createMediaStreamSource(remoteStream);
+          const analyser = remoteAudioContextRef.current.createAnalyser();
+          analyser.fftSize = 512;
+          source.connect(analyser);
+          remoteAudioNodesByUserIdRef.current.set(targetUserId, {
+            stream: remoteStream,
+            source,
+            analyser,
+            spatial: false,
+            panner: null,
+            gain: null,
+          });
+          remoteSpeakingAnalyserByUserIdRef.current.set(targetUserId, analyser);
+          remoteSpeakingDataByUserIdRef.current.set(targetUserId, new Uint8Array(analyser.fftSize));
+        }
       }
 
       void audio.play().catch(() => {
@@ -943,6 +1109,24 @@ export function App() {
 
     return peerConnection;
   }
+
+  useEffect(() => {
+    for (const [userId, audio] of remoteAudioByUserIdRef.current.entries()) {
+      const stream = audio.srcObject;
+      if (!(stream instanceof MediaStream)) {
+        continue;
+      }
+
+      const nodes = remoteAudioNodesByUserIdRef.current.get(userId);
+      if (!nodes || nodes.stream !== stream || nodes.spatial !== spatialAudioEnabled) {
+        const event = { streams: [stream] } as RTCTrackEvent;
+        const pc = peerConnectionsRef.current.get(userId);
+        if (pc?.ontrack) {
+          pc.ontrack(event);
+        }
+      }
+    }
+  }, [spatialAudioEnabled]);
 
   function updateAuth(next: AuthState | null) {
     setAuth(next);
@@ -2374,7 +2558,19 @@ export function App() {
           />
           Enable desktop notifications
         </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={spatialAudioEnabled}
+            disabled={!spatialAudioAvailable}
+            onChange={(event) => setSpatialAudioEnabled(event.target.checked)}
+          />
+          Enable spatial audio
+        </label>
         <small className="subtle">Permission: {notificationPermission}</small>
+        {!spatialAudioAvailable && (
+          <small className="subtle">Spatial audio unavailable in this browser.</small>
+        )}
       </section>
 
       <section className="guild-shell">

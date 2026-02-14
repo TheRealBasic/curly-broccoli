@@ -353,4 +353,166 @@ describe('App', () => {
     });
   });
 
+  it('toggles spatial audio setting and persists it', async () => {
+    localStorage.setItem(
+      'curly_broccoli_auth',
+      JSON.stringify({
+        user: { id: 'user-1', username: 'alice' },
+        accessToken: 'token-1',
+        refreshToken: 'refresh-1',
+      }),
+    );
+
+    const fetchMock = vi.fn(async (input: URL | RequestInfo) => {
+      const url = String(input);
+      if (url.endsWith('/servers')) {
+        return new Response(JSON.stringify({ servers: [{ id: 'server-1', name: 'Main', ownerId: 'user-1' }] }), { status: 200 });
+      }
+      if (url.includes('/servers/server-1/channels')) {
+        return new Response(JSON.stringify({ channels: [{ id: 'channel-1', serverId: 'server-1', name: 'general' }] }), { status: 200 });
+      }
+      if (url.includes('/servers/server-1/members')) {
+        return new Response(JSON.stringify({ members: [{ userId: 'user-1', username: 'alice', role: 'owner', canShareScreen: true, isMuted: false }] }), { status: 200 });
+      }
+      if (url.includes('/servers/server-1/audit-logs')) {
+        return new Response(JSON.stringify({ logs: [] }), { status: 200 });
+      }
+      if (url.endsWith('/dm/threads')) {
+        return new Response(JSON.stringify({ threads: [] }), { status: 200 });
+      }
+      if (url.endsWith('/unread/summary')) {
+        return new Response(JSON.stringify({ summary: { channels: {}, dmThreads: {}, totalChannels: 0, totalDmThreads: 0 } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({}), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText('#general')).toBeInTheDocument();
+    });
+
+    const checkbox = screen.getByRole('checkbox', { name: 'Enable spatial audio' }) as HTMLInputElement;
+    expect(checkbox.checked).toBe(false);
+
+    await act(async () => {
+      checkbox.click();
+    });
+
+    expect(checkbox.checked).toBe(true);
+    expect(localStorage.getItem('curly_broccoli_spatial_audio_enabled')).toBe('true');
+  });
+
+  it('creates and disposes spatial audio nodes as participants join and leave', async () => {
+    localStorage.setItem(
+      'curly_broccoli_auth',
+      JSON.stringify({
+        user: { id: 'user-1', username: 'alice' },
+        accessToken: 'token-1',
+        refreshToken: 'refresh-1',
+      }),
+    );
+    localStorage.setItem('curly_broccoli_spatial_audio_enabled', 'true');
+
+    class MockMediaStream {}
+    vi.stubGlobal('MediaStream', MockMediaStream as unknown as typeof MediaStream);
+    vi.stubGlobal('navigator', {
+      ...navigator,
+      mediaDevices: {
+        getUserMedia: vi.fn(async () => ({ getTracks: () => [] })),
+      },
+    });
+
+    const connectSpy = vi.fn();
+    const disconnectSpy = vi.fn();
+    const audioContextMock = {
+      currentTime: 0,
+      destination: {},
+      createMediaStreamSource: vi.fn(() => ({ connect: connectSpy, disconnect: disconnectSpy })),
+      createPanner: vi.fn(() => ({
+        panningModel: 'HRTF',
+        distanceModel: 'inverse',
+        refDistance: 1,
+        maxDistance: 15,
+        rolloffFactor: 1,
+        positionX: { value: 0, setTargetAtTime: vi.fn() },
+        positionY: { value: 0, setTargetAtTime: vi.fn() },
+        positionZ: { value: 0, setTargetAtTime: vi.fn() },
+        setPosition: vi.fn(),
+        connect: connectSpy,
+        disconnect: disconnectSpy,
+      })),
+      createGain: vi.fn(() => ({ gain: { value: 1 }, connect: connectSpy, disconnect: disconnectSpy })),
+      createAnalyser: vi.fn(() => ({ fftSize: 0, connect: connectSpy, disconnect: disconnectSpy, getByteTimeDomainData: vi.fn() })),
+      close: vi.fn(),
+    };
+    vi.stubGlobal('AudioContext', vi.fn(() => audioContextMock));
+
+    class MockRTCPeerConnection {
+      static instances: MockRTCPeerConnection[] = [];
+      ontrack: ((event: RTCTrackEvent) => void) | null = null;
+      onicecandidate: ((event: RTCPeerConnectionIceEvent) => void) | null = null;
+      onconnectionstatechange: (() => void) | null = null;
+      connectionState: RTCPeerConnectionState = 'connected';
+      constructor() {
+        MockRTCPeerConnection.instances.push(this);
+      }
+      addTrack() { return {} as RTCRtpSender; }
+      createOffer = vi.fn(async () => ({ type: 'offer', sdp: 'x' }));
+      setLocalDescription = vi.fn(async () => {});
+      close = vi.fn();
+      restartIce = vi.fn();
+      setRemoteDescription = vi.fn(async () => {});
+      createAnswer = vi.fn(async () => ({ type: 'answer', sdp: 'y' }));
+      addIceCandidate = vi.fn(async () => {});
+    }
+    vi.stubGlobal('RTCPeerConnection', MockRTCPeerConnection as unknown as typeof RTCPeerConnection);
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
+
+    const fetchMock = vi.fn(async (input: URL | RequestInfo) => {
+      const url = String(input);
+      if (url.endsWith('/servers')) return new Response(JSON.stringify({ servers: [{ id: 'server-1', name: 'Main', ownerId: 'user-1' }] }), { status: 200 });
+      if (url.includes('/servers/server-1/channels')) return new Response(JSON.stringify({ channels: [{ id: 'channel-1', serverId: 'server-1', name: 'general' }] }), { status: 200 });
+      if (url.includes('/servers/server-1/members')) return new Response(JSON.stringify({ members: [{ userId: 'user-1', username: 'alice', role: 'owner', canShareScreen: true, isMuted: false }] }), { status: 200 });
+      if (url.includes('/servers/server-1/audit-logs')) return new Response(JSON.stringify({ logs: [] }), { status: 200 });
+      if (url.endsWith('/dm/threads')) return new Response(JSON.stringify({ threads: [] }), { status: 200 });
+      if (url.endsWith('/unread/summary')) return new Response(JSON.stringify({ summary: { channels: {}, dmThreads: {}, totalChannels: 0, totalDmThreads: 0 } }), { status: 200 });
+      return new Response(JSON.stringify({}), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('#general')).toBeInTheDocument());
+
+    const socketInstance = MockWebSocket.instances[0];
+    act(() => {
+      socketInstance.emit('open');
+      socketInstance.emit('message', {
+        type: 'voice:participants',
+        payload: {
+          channelId: 'channel-1',
+          participants: [
+            { userId: 'user-1', username: 'alice' },
+            { userId: 'user-2', username: 'bob' },
+          ],
+        },
+      });
+    });
+
+    const remoteStream = new MockMediaStream() as unknown as MediaStream;
+    act(() => {
+      const pc = MockRTCPeerConnection.instances[0];
+      pc.ontrack?.({ streams: [remoteStream] } as RTCTrackEvent);
+      socketInstance.emit('message', {
+        type: 'voice:user-left',
+        payload: { channelId: 'channel-1', userId: 'user-2' },
+      });
+    });
+
+    await waitFor(() => {
+      expect(audioContextMock.createPanner).toHaveBeenCalled();
+      expect(disconnectSpy).toHaveBeenCalled();
+    });
+  });
+
 });

@@ -42,6 +42,8 @@ import {
   runMigrations,
   saveDmMessage,
   saveMessage,
+  searchChannelMessages,
+  searchDmMessages,
   storeRefreshToken,
   writeModerationAuditLog,
 } from './db.js';
@@ -73,6 +75,8 @@ const app = createApp({
   createOrGetDmThread,
   listDmThreadsForUser,
   fetchRecentDmMessages,
+  searchChannelMessages,
+  searchDmMessages,
   canAccessDmThread,
   canAccessChannel,
   createMessageAttachment,

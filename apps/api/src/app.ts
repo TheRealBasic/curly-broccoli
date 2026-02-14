@@ -130,6 +130,18 @@ type AppDependencies = {
   createOrGetDmThread: (userAId: string, userBId: string) => Promise<string>;
   listDmThreadsForUser: (userId: string) => Promise<DmThreadSummary[]>;
   fetchRecentDmMessages: (threadId: string, limit?: number) => Promise<DmMessage[]>;
+  searchChannelMessages: (
+    channelId: string,
+    query: string,
+    limit?: number,
+    offset?: number,
+  ) => Promise<ChatMessage[]>;
+  searchDmMessages: (
+    threadId: string,
+    query: string,
+    limit?: number,
+    offset?: number,
+  ) => Promise<DmMessage[]>;
   canAccessDmThread: (threadId: string, userId: string) => Promise<boolean>;
   canAccessChannel: (channelId: string, userId: string) => Promise<boolean>;
   createMessageAttachment: (attachment: {
@@ -370,6 +382,35 @@ export function createApp(deps: AppDependencies) {
     res.json({ messages });
   });
 
+
+  app.get('/messages/search', async (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) {
+      return;
+    }
+
+    const channelId = String(req.query.channelId ?? '').trim();
+    const query = String(req.query.query ?? '').trim();
+    if (!channelId || !query) {
+      res.status(400).json({ error: 'channelId and query query params are required.' });
+      return;
+    }
+
+    const allowed = await deps.canAccessChannel(channelId, auth.userId);
+    if (!allowed) {
+      res.status(403).json({ error: 'You cannot access this channel.' });
+      return;
+    }
+
+    const limitRaw = Number(req.query.limit);
+    const limit = Number.isFinite(limitRaw) ? limitRaw : undefined;
+    const offsetRaw = Number(req.query.offset);
+    const offset = Number.isFinite(offsetRaw) ? offsetRaw : undefined;
+
+    const messages = await deps.searchChannelMessages(channelId, query, limit, offset);
+    res.json({ messages });
+  });
+
   app.post('/uploads/images', async (req, res) => {
     const auth = requireAuth(req, res);
     if (!auth) {
@@ -596,6 +637,35 @@ export function createApp(deps: AppDependencies) {
     const limitRaw = Number(req.query.limit);
     const limit = Number.isFinite(limitRaw) ? limitRaw : undefined;
     const messages = await deps.fetchRecentDmMessages(threadId, limit);
+    res.json({ messages });
+  });
+
+
+  app.get('/dm/messages/search', async (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) {
+      return;
+    }
+
+    const threadId = String(req.query.threadId ?? '').trim();
+    const query = String(req.query.query ?? '').trim();
+    if (!threadId || !query) {
+      res.status(400).json({ error: 'threadId and query query params are required.' });
+      return;
+    }
+
+    const allowed = await deps.canAccessDmThread(threadId, auth.userId);
+    if (!allowed) {
+      res.status(403).json({ error: 'You cannot access this DM thread.' });
+      return;
+    }
+
+    const limitRaw = Number(req.query.limit);
+    const limit = Number.isFinite(limitRaw) ? limitRaw : undefined;
+    const offsetRaw = Number(req.query.offset);
+    const offset = Number.isFinite(offsetRaw) ? offsetRaw : undefined;
+
+    const messages = await deps.searchDmMessages(threadId, query, limit, offset);
     res.json({ messages });
   });
 

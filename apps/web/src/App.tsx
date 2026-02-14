@@ -183,7 +183,16 @@ export function App() {
   }, [apiBase, auth?.accessToken]);
 
   const typingUsers = activeChannelId ? (typingByChannel[activeChannelId] ?? []) : [];
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<(ChatMessage | DmMessage)[]>([]);
+  const [searchOffset, setSearchOffset] = useState(0);
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const SEARCH_PAGE_SIZE = 20;
+
   const visibleMessages = chatMode === 'dm' ? dmMessages : messages;
+  const showingSearchResults = searchQuery.trim().length > 0;
+  const displayedMessages = showingSearchResults ? searchResults : visibleMessages;
   const currentMember = members.find((member) => member.userId === auth?.user.id) ?? null;
   const isServerOwner = currentMember?.role === 'owner';
   const totalChannelUnread = Object.values(channelUnreadCounts).reduce(
@@ -339,6 +348,10 @@ export function App() {
       setPendingImageUploads([]);
       setChannelUnreadCounts({});
       setDmUnreadCounts({});
+      setSearchQuery('');
+      setSearchResults([]);
+      setSearchOffset(0);
+      setSearchError(null);
       return;
     }
 
@@ -569,6 +582,10 @@ export function App() {
 
     setPendingImageUploads([]);
     setMessages([]);
+    setSearchQuery('');
+    setSearchResults([]);
+    setSearchOffset(0);
+    setSearchError(null);
     socket.send(
       JSON.stringify({
         type: 'chat:join-channel',
@@ -599,6 +616,10 @@ export function App() {
     }
 
     setDmMessages([]);
+    setSearchQuery('');
+    setSearchResults([]);
+    setSearchOffset(0);
+    setSearchError(null);
     socket.send(
       JSON.stringify({
         type: 'dm:join-thread',
@@ -652,6 +673,43 @@ export function App() {
 
     setDesktopNotificationsEnabled(true);
     setError(null);
+  }
+
+
+  async function runSearch(offset = 0) {
+    const query = searchQuery.trim();
+    if (!query) {
+      setSearchResults([]);
+      setSearchOffset(0);
+      setSearchError(null);
+      return;
+    }
+
+    const path =
+      chatMode === 'dm'
+        ? `/dm/messages/search?threadId=${encodeURIComponent(String(activeDmThreadId ?? ''))}&query=${encodeURIComponent(query)}&limit=${SEARCH_PAGE_SIZE}&offset=${offset}`
+        : `/messages/search?channelId=${encodeURIComponent(String(activeChannelId ?? ''))}&query=${encodeURIComponent(query)}&limit=${SEARCH_PAGE_SIZE}&offset=${offset}`;
+
+    if ((chatMode === 'dm' && !activeDmThreadId) || (chatMode === 'channel' && !activeChannelId)) {
+      return;
+    }
+
+    setIsSearching(true);
+    setSearchError(null);
+    try {
+      const res = await authedFetch(path);
+      if (!res.ok) {
+        throw new Error('Unable to search messages.');
+      }
+
+      const data = (await res.json()) as { messages: (ChatMessage | DmMessage)[] };
+      setSearchResults(data.messages);
+      setSearchOffset(offset);
+    } catch (reason) {
+      setSearchError(reason instanceof Error ? reason.message : 'Unable to search messages.');
+    } finally {
+      setIsSearching(false);
+    }
   }
 
   function sendMessage() {
@@ -1114,6 +1172,57 @@ export function App() {
         </aside>
 
         <section className="chat-panel">
+          <form
+            className="inline-form search-bar"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void runSearch(0);
+            }}
+          >
+            <input
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder={chatMode === 'dm' ? 'Search DMs' : 'Search channel messages'}
+              aria-label="Search messages"
+            />
+            <button type="submit" disabled={isSearching}>
+              {isSearching ? 'Searching...' : 'Search'}
+            </button>
+            {showingSearchResults && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchQuery('');
+                  setSearchResults([]);
+                  setSearchOffset(0);
+                  setSearchError(null);
+                }}
+              >
+                Clear
+              </button>
+            )}
+          </form>
+          {showingSearchResults && (
+            <div className="search-pagination">
+              <button
+                type="button"
+                onClick={() => void runSearch(Math.max(0, searchOffset - SEARCH_PAGE_SIZE))}
+                disabled={isSearching || searchOffset === 0}
+              >
+                Previous
+              </button>
+              <span className="subtle">Offset {searchOffset}</span>
+              <button
+                type="button"
+                onClick={() => void runSearch(searchOffset + SEARCH_PAGE_SIZE)}
+                disabled={isSearching || searchResults.length < SEARCH_PAGE_SIZE}
+              >
+                Next
+              </button>
+            </div>
+          )}
+          {searchError && <p className="error">{searchError}</p>}
+
           <section className="chat-box" aria-label="Messages">
             {chatMode === 'channel' && !activeChannelId && (
               <p className="empty">Pick a channel to start chatting.</p>
@@ -1121,8 +1230,10 @@ export function App() {
             {chatMode === 'dm' && !activeDmThreadId && <p className="empty">Select a DM thread.</p>}
             {((chatMode === 'channel' && activeChannelId) ||
               (chatMode === 'dm' && activeDmThreadId)) &&
-              visibleMessages.length === 0 && <p className="empty">No messages yet.</p>}
-            {visibleMessages.map((message) => (
+              displayedMessages.length === 0 && (
+                <p className="empty">{showingSearchResults ? 'No matching messages.' : 'No messages yet.'}</p>
+              )}
+            {displayedMessages.map((message) => (
               <article key={message.id} className="message">
                 <header>
                   <strong>{'user' in message ? message.user : message.senderUsername}</strong>

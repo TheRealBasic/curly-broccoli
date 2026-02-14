@@ -1,9 +1,11 @@
 # Voice Chat + Screen Share Improvement Plan
 
 ## Goal
+
 Deliver a more reliable, low-latency voice experience and add secure, channel-scoped screen sharing with clear moderation controls.
 
 ## Phase 1 — Stabilize Current Voice Chat
+
 1. **Connection reliability hardening**
    - Add heartbeat + reconnect backoff tuning for voice signaling sockets.
    - Add explicit ICE restart handling on peer connection failures.
@@ -17,6 +19,7 @@ Deliver a more reliable, low-latency voice experience and add secure, channel-sc
    - Add dashboards for join success rate, median setup time, and disconnect causes.
 
 ## Phase 2 — Screen Share MVP
+
 1. **Protocol additions**
    - Extend shared event contracts for screen share lifecycle:
      - `screen:share-start`
@@ -34,6 +37,7 @@ Deliver a more reliable, low-latency voice experience and add secure, channel-sc
    - Support single presenter per channel for MVP (later expand to multi-share).
 
 ## Phase 3 — Permissions, Safety, and Moderation
+
 1. **Access control**
    - Restrict share start to members with voice access to the channel.
    - Add optional role gate: "Can share screen".
@@ -45,14 +49,22 @@ Deliver a more reliable, low-latency voice experience and add secure, channel-sc
    - Warn users when sharing entire display vs single window.
 
 ## Phase 4 — Performance and Scalability
+
 1. **Resource controls**
-   - Default frame-rate and bitrate presets for screen content types.
-   - Dynamic bitrate adaptation based on packet loss and RTT.
+   - Added preset profiles for screen content types:
+     - `text`: 8 FPS @ 0.6 Mbps
+     - `mixed`: 15 FPS @ 1.2 Mbps
+     - `motion`: 30 FPS @ 2.5 Mbps
+   - Added adaptive downshift logic that lowers frame-rate/bitrate when RTT or packet loss crosses thresholds.
 2. **Topology improvements**
-   - Keep P2P for small channels; define threshold for SFU migration.
-   - Document phased SFU plan for larger voice rooms.
+   - Keep P2P for smaller channels (threshold: up to 6 participants).
+   - Trigger SFU path messaging for larger channels and document a phased SFU rollout plan:
+     1. Stage 1: Deploy SFU for screen-share video only in large rooms.
+     2. Stage 2: Migrate large-room voice routing to SFU while retaining P2P fallback.
+     3. Stage 3: Full adaptive topology selection (P2P vs SFU) based on participant count and network quality.
 
 ## Phase 5 — QA and Rollout
+
 1. **Automated tests**
    - Add unit tests for new protocol validation in shared types.
    - Add API tests for permission checks and share lifecycle.
@@ -62,12 +74,14 @@ Deliver a more reliable, low-latency voice experience and add secure, channel-sc
    - Track error budgets and rollback criteria.
 
 ## Definition of Done
+
 - Voice reconnect failure rate reduced and measured.
 - Users can start/stop screen share in-channel with reliable viewer playback.
 - Role-based permissions and moderation controls are active.
 - Metrics and alerts exist for voice/screen share reliability.
 
 ## Immediate Next Actions
+
 1. Finalize shared event schema changes in `packages/shared`.
 2. Implement API signaling handlers and permission checks in `apps/api`.
 3. Implement web UI controls + stream rendering in `apps/web`.

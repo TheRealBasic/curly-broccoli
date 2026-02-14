@@ -424,7 +424,6 @@ h1 {
   gap: 0.4rem;
 }
 
-
 .share-consent-card {
   border: 1px solid #d1d5db;
   background: #f8fafc;
@@ -459,4 +458,18 @@ h1 {
   border: 1px solid #93c5fd;
   background: #0f172a;
   max-height: 300px;
+}
+
+.screen-preset-control {
+  display: grid;
+  gap: 0.25rem;
+  margin-top: 0.4rem;
+  font-size: 0.85rem;
+}
+
+.screen-preset-control select {
+  border-radius: 0.35rem;
+  border: 1px solid #cbd5e1;
+  padding: 0.35rem 0.45rem;
+  background: #fff;
 }

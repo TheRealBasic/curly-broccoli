@@ -14,11 +14,12 @@ class MockWebSocket {
 describe('App', () => {
   beforeEach(() => {
     vi.stubGlobal('WebSocket', MockWebSocket as unknown as typeof WebSocket);
+    localStorage.clear();
   });
 
-  it('renders basic chat interface', () => {
+  it('renders auth interface when signed out', () => {
     render(<App />);
-    expect(screen.getByText('Global room · anonymous chat')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Send' })).toBeInTheDocument();
+    expect(screen.getByText('Create an account or sign in to enter chat.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Sign in' })).toBeInTheDocument();
   });
 });

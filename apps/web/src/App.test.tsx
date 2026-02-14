@@ -97,6 +97,14 @@ describe('App', () => {
       if (url.endsWith('/dm/threads')) {
         return new Response(JSON.stringify({ threads: [] }), { status: 200 });
       }
+      if (url.endsWith('/unread/summary')) {
+        return new Response(
+          JSON.stringify({
+            summary: { channels: {}, dmThreads: {}, totalChannels: 0, totalDmThreads: 0 },
+          }),
+          { status: 200 },
+        );
+      }
 
       return new Response(JSON.stringify({}), { status: 404 });
     });
@@ -175,6 +183,14 @@ describe('App', () => {
       }
       if (url.endsWith('/dm/threads')) {
         return new Response(JSON.stringify({ threads: [] }), { status: 200 });
+      }
+      if (url.endsWith('/unread/summary')) {
+        return new Response(
+          JSON.stringify({
+            summary: { channels: {}, dmThreads: {}, totalChannels: 0, totalDmThreads: 0 },
+          }),
+          { status: 200 },
+        );
       }
 
       return new Response(JSON.stringify({}), { status: 404 });
@@ -282,6 +298,14 @@ describe('App', () => {
       }
       if (url.endsWith('/dm/threads')) {
         return new Response(JSON.stringify({ threads: [] }), { status: 200 });
+      }
+      if (url.endsWith('/unread/summary')) {
+        return new Response(
+          JSON.stringify({
+            summary: { channels: {}, dmThreads: {}, totalChannels: 0, totalDmThreads: 0 },
+          }),
+          { status: 200 },
+        );
       }
       if (url.endsWith('/servers/server-1/mutes/member-1') && init?.method === 'DELETE') {
         return new Response(null, { status: 204 });

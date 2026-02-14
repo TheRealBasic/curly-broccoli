@@ -204,6 +204,17 @@ export type ServerEvent =
       };
     }
   | {
+      type: 'notification:unread-updated';
+      payload: {
+        summary: {
+          channels: Record<string, number>;
+          dmThreads: Record<string, number>;
+          totalChannels: number;
+          totalDmThreads: number;
+        };
+      };
+    }
+  | {
       type: 'presence:sync';
       payload: { serverId: string; onlineUserIds: string[] };
     }

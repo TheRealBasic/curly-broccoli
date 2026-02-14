@@ -218,6 +218,23 @@ type AppDependencies = {
     sizeBytes: number;
     url: string;
   }>;
+  markChannelAsRead: (userId: string, channelId: string, lastReadMessageId?: string) => Promise<void>;
+  markDmThreadAsRead: (userId: string, threadId: string, lastReadMessageId?: string) => Promise<void>;
+  getUnreadSummary: (userId: string) => Promise<{
+    channels: Record<string, number>;
+    dmThreads: Record<string, number>;
+    totalChannels: number;
+    totalDmThreads: number;
+  }>;
+  notifyUnreadUpdated?: (event: {
+    userId: string;
+    summary: {
+      channels: Record<string, number>;
+      dmThreads: Record<string, number>;
+      totalChannels: number;
+      totalDmThreads: number;
+    };
+  }) => void;
 };
 
 type RequestMetric = {
@@ -1108,6 +1125,78 @@ export function createApp(deps: AppDependencies) {
       res.json(page);
     } catch {
       res.status(400).json({ error: 'Invalid before/after cursor.' });
+    }
+  });
+
+  app.get('/unread/summary', async (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) {
+      return;
+    }
+
+    const summary = await deps.getUnreadSummary(auth.userId);
+    res.json({ summary });
+  });
+
+  app.post('/channels/:channelId/read', async (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) {
+      return;
+    }
+
+    const channelId = String(req.params.channelId ?? '').trim();
+    if (!channelId) {
+      res.status(400).json({ error: 'channelId is required.' });
+      return;
+    }
+
+    const allowed = await deps.canAccessChannel(channelId, auth.userId);
+    if (!allowed) {
+      res.status(403).json({ error: 'You cannot access this channel.' });
+      return;
+    }
+
+    const lastReadMessageId =
+      req.body?.lastReadMessageId === undefined ? undefined : String(req.body?.lastReadMessageId ?? '').trim();
+
+    try {
+      await deps.markChannelAsRead(auth.userId, channelId, lastReadMessageId || undefined);
+      const summary = await deps.getUnreadSummary(auth.userId);
+      deps.notifyUnreadUpdated?.({ userId: auth.userId, summary });
+      res.status(204).send();
+    } catch {
+      res.status(400).json({ error: 'Invalid read marker payload.' });
+    }
+  });
+
+  app.post('/dm/threads/:threadId/read', async (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) {
+      return;
+    }
+
+    const threadId = String(req.params.threadId ?? '').trim();
+    if (!threadId) {
+      res.status(400).json({ error: 'threadId is required.' });
+      return;
+    }
+
+    const allowed = await deps.canAccessDmThread(threadId, auth.userId);
+    if (!allowed) {
+      res.status(403).json({ error: 'You cannot access this DM thread.' });
+      return;
+    }
+
+    const lastReadMessageId =
+      req.body?.lastReadMessageId === undefined ? undefined : String(req.body?.lastReadMessageId ?? '').trim();
+
+    try {
+      await deps.markDmThreadAsRead(auth.userId, threadId, lastReadMessageId || undefined);
+      const summary = await deps.getUnreadSummary(auth.userId);
+      deps.notifyUnreadUpdated?.({ userId: auth.userId, summary });
+      res.status(204).send();
+    } catch {
+      res.status(400).json({ error: 'Invalid read marker payload.' });
     }
   });
 

@@ -127,6 +127,13 @@ type MessagePage<T> = {
   prevCursor: string | null;
 };
 
+export type UnreadSummary = {
+  channels: Record<string, number>;
+  dmThreads: Record<string, number>;
+  totalChannels: number;
+  totalDmThreads: number;
+};
+
 type CursorPaginationOptions = {
   limit?: number;
   before?: string;
@@ -1405,4 +1412,201 @@ export async function searchDmMessagesPage(
 export async function searchDmMessages(threadId: string, query: string, limit = 25, offset = 0) {
   const page = await searchDmMessagesPage(threadId, query, { limit, offset });
   return page.messages;
+}
+
+async function resolveChannelReadReference(channelId: string, lastReadMessageId?: string | null) {
+  if (!lastReadMessageId) {
+    const latest = await pool.query<{ id: string; created_at: Date | string }>(
+      `
+        SELECT id, created_at
+        FROM chat_messages
+        WHERE channel_id = $1
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1;
+      `,
+      [channelId],
+    );
+    return {
+      lastReadMessageId: latest.rows[0]?.id ?? null,
+      lastReadAt: latest.rows[0] ? new Date(latest.rows[0].created_at).toISOString() : null,
+    };
+  }
+
+  const message = await pool.query<{ id: string; created_at: Date | string }>(
+    `
+      SELECT id, created_at
+      FROM chat_messages
+      WHERE id = $1 AND channel_id = $2;
+    `,
+    [lastReadMessageId, channelId],
+  );
+
+  if (!message.rowCount) {
+    throw new Error('Message not found in channel');
+  }
+
+  return {
+    lastReadMessageId: message.rows[0].id,
+    lastReadAt: new Date(message.rows[0].created_at).toISOString(),
+  };
+}
+
+async function resolveDmReadReference(threadId: string, lastReadMessageId?: string | null) {
+  if (!lastReadMessageId) {
+    const latest = await pool.query<{ id: string; created_at: Date | string }>(
+      `
+        SELECT id, created_at
+        FROM dm_messages
+        WHERE thread_id = $1
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1;
+      `,
+      [threadId],
+    );
+
+    return {
+      lastReadMessageId: latest.rows[0]?.id ?? null,
+      lastReadAt: latest.rows[0] ? new Date(latest.rows[0].created_at).toISOString() : null,
+    };
+  }
+
+  const message = await pool.query<{ id: string; created_at: Date | string }>(
+    `
+      SELECT id, created_at
+      FROM dm_messages
+      WHERE id = $1 AND thread_id = $2;
+    `,
+    [lastReadMessageId, threadId],
+  );
+
+  if (!message.rowCount) {
+    throw new Error('Message not found in DM thread');
+  }
+
+  return {
+    lastReadMessageId: message.rows[0].id,
+    lastReadAt: new Date(message.rows[0].created_at).toISOString(),
+  };
+}
+
+export async function markChannelAsRead(userId: string, channelId: string, lastReadMessageId?: string) {
+  const readRef = await resolveChannelReadReference(channelId, lastReadMessageId);
+  await pool.query(
+    `
+      INSERT INTO channel_read_markers (
+        user_id,
+        channel_id,
+        last_read_message_id,
+        last_read_at,
+        updated_at
+      )
+      VALUES ($1, $2, $3, $4, NOW())
+      ON CONFLICT (user_id, channel_id)
+      DO UPDATE
+      SET
+        last_read_at = GREATEST(
+          COALESCE(channel_read_markers.last_read_at, '-infinity'::timestamptz),
+          COALESCE(EXCLUDED.last_read_at, '-infinity'::timestamptz)
+        ),
+        last_read_message_id =
+          CASE
+            WHEN COALESCE(EXCLUDED.last_read_at, '-infinity'::timestamptz)
+              >= COALESCE(channel_read_markers.last_read_at, '-infinity'::timestamptz)
+            THEN EXCLUDED.last_read_message_id
+            ELSE channel_read_markers.last_read_message_id
+          END,
+        updated_at = NOW();
+    `,
+    [userId, channelId, readRef.lastReadMessageId, readRef.lastReadAt],
+  );
+}
+
+export async function markDmThreadAsRead(userId: string, threadId: string, lastReadMessageId?: string) {
+  const readRef = await resolveDmReadReference(threadId, lastReadMessageId);
+  await pool.query(
+    `
+      INSERT INTO dm_thread_read_markers (
+        user_id,
+        thread_id,
+        last_read_message_id,
+        last_read_at,
+        updated_at
+      )
+      VALUES ($1, $2, $3, $4, NOW())
+      ON CONFLICT (user_id, thread_id)
+      DO UPDATE
+      SET
+        last_read_at = GREATEST(
+          COALESCE(dm_thread_read_markers.last_read_at, '-infinity'::timestamptz),
+          COALESCE(EXCLUDED.last_read_at, '-infinity'::timestamptz)
+        ),
+        last_read_message_id =
+          CASE
+            WHEN COALESCE(EXCLUDED.last_read_at, '-infinity'::timestamptz)
+              >= COALESCE(dm_thread_read_markers.last_read_at, '-infinity'::timestamptz)
+            THEN EXCLUDED.last_read_message_id
+            ELSE dm_thread_read_markers.last_read_message_id
+          END,
+        updated_at = NOW();
+    `,
+    [userId, threadId, readRef.lastReadMessageId, readRef.lastReadAt],
+  );
+}
+
+export async function getUnreadSummary(userId: string): Promise<UnreadSummary> {
+  const channelRows = await pool.query<{ channel_id: string; unread_count: string }>(
+    `
+      SELECT
+        channel_messages.channel_id,
+        COUNT(*)::text AS unread_count
+      FROM chat_messages channel_messages
+      INNER JOIN channels c ON c.id = channel_messages.channel_id
+      INNER JOIN server_memberships sm ON sm.server_id = c.server_id AND sm.user_id = $1
+      LEFT JOIN channel_read_markers marker
+        ON marker.user_id = $1
+       AND marker.channel_id = channel_messages.channel_id
+      WHERE COALESCE(channel_messages.user_id, '') <> $1
+        AND (
+          marker.last_read_at IS NULL
+          OR channel_messages.created_at > marker.last_read_at
+        )
+      GROUP BY channel_messages.channel_id;
+    `,
+    [userId],
+  );
+
+  const dmRows = await pool.query<{ thread_id: string; unread_count: string }>(
+    `
+      SELECT
+        messages.thread_id,
+        COUNT(*)::text AS unread_count
+      FROM dm_messages messages
+      INNER JOIN dm_threads t ON t.id = messages.thread_id
+      LEFT JOIN dm_thread_read_markers marker
+        ON marker.user_id = $1
+       AND marker.thread_id = messages.thread_id
+      WHERE (t.user_a_id = $1 OR t.user_b_id = $1)
+        AND messages.sender_user_id <> $1
+        AND (
+          marker.last_read_at IS NULL
+          OR messages.created_at > marker.last_read_at
+        )
+      GROUP BY messages.thread_id;
+    `,
+    [userId],
+  );
+
+  const channels = Object.fromEntries(
+    channelRows.rows.map((row) => [row.channel_id, Number.parseInt(row.unread_count, 10)]),
+  );
+  const dmThreads = Object.fromEntries(
+    dmRows.rows.map((row) => [row.thread_id, Number.parseInt(row.unread_count, 10)]),
+  );
+
+  return {
+    channels,
+    dmThreads,
+    totalChannels: Object.values(channels).reduce((sum, value) => sum + value, 0),
+    totalDmThreads: Object.values(dmThreads).reduce((sum, value) => sum + value, 0),
+  };
 }

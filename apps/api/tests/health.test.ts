@@ -30,6 +30,8 @@ const baseDeps = {
   createOrGetDmThread: vi.fn<() => Promise<string>>().mockResolvedValue('thread-1'),
   listDmThreadsForUser: vi.fn<() => Promise<DmThreadSummary[]>>().mockResolvedValue([]),
   fetchRecentDmMessages: vi.fn<() => Promise<DmMessage[]>>().mockResolvedValue([]),
+  searchChannelMessages: vi.fn<(channelId: string) => Promise<ChatMessage[]>>().mockResolvedValue([]),
+  searchDmMessages: vi.fn<(threadId: string) => Promise<DmMessage[]>>().mockResolvedValue([]),
   canAccessDmThread: vi.fn<() => Promise<boolean>>().mockResolvedValue(true),
   canAccessChannel: vi.fn<() => Promise<boolean>>().mockResolvedValue(true),
   createMessageAttachment: vi.fn(),

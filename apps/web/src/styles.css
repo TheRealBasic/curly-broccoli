@@ -326,3 +326,27 @@ h1 {
   background: #dbeafe;
   color: #1e3a8a;
 }
+
+.search-bar {
+  margin-bottom: 0.6rem;
+}
+
+.search-pagination {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
+}
+
+.search-pagination button {
+  border: 1px solid #d1d5db;
+  background: #f9fafb;
+  border-radius: 0.35rem;
+  padding: 0.3rem 0.55rem;
+  cursor: pointer;
+}
+
+.search-pagination button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

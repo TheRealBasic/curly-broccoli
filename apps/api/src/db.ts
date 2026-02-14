@@ -94,6 +94,24 @@ type DmMessageRow = {
   created_at: Date | string;
 };
 
+type SearchMessageRow = {
+  id: string;
+  channel_id: string;
+  user_id: string | null;
+  user_name: string;
+  text: string;
+  created_at: Date | string;
+};
+
+type SearchDmMessageRow = {
+  id: string;
+  thread_id: string;
+  sender_user_id: string;
+  sender_username: string;
+  text: string;
+  created_at: Date | string;
+};
+
 function mapAttachmentRow(row: MessageAttachmentRow): MessageAttachment {
   return {
     id: row.id,
@@ -901,4 +919,65 @@ export async function fetchRecentDmMessages(threadId: string, limit = chatHistor
   );
 
   return rows.rows.reverse().map(mapDmMessageRow);
+}
+
+export async function searchChannelMessages(
+  channelId: string,
+  query: string,
+  limit = 25,
+  offset = 0,
+) {
+  const normalizedQuery = query.trim();
+  if (!normalizedQuery) {
+    return [] as ChatMessage[];
+  }
+
+  const safeLimit = Math.max(1, Math.min(limit, 100));
+  const safeOffset = Math.max(0, Math.min(offset, 5_000));
+  const rows = await pool.query<SearchMessageRow>(
+    `
+      SELECT id, channel_id, user_id, user_name, text, created_at
+      FROM chat_messages
+      WHERE channel_id = $1
+        AND to_tsvector('simple', coalesce(text, '')) @@ plainto_tsquery('simple', $2)
+      ORDER BY created_at DESC
+      LIMIT $3
+      OFFSET $4;
+    `,
+    [channelId, normalizedQuery, safeLimit, safeOffset],
+  );
+
+  const attachmentsByMessageId = await fetchAttachmentsForMessages(rows.rows.map((row) => row.id));
+  return rows.rows.map((row) => mapRow(row, attachmentsByMessageId.get(row.id) ?? []));
+}
+
+export async function searchDmMessages(threadId: string, query: string, limit = 25, offset = 0) {
+  const normalizedQuery = query.trim();
+  if (!normalizedQuery) {
+    return [] as DmMessage[];
+  }
+
+  const safeLimit = Math.max(1, Math.min(limit, 100));
+  const safeOffset = Math.max(0, Math.min(offset, 5_000));
+  const rows = await pool.query<SearchDmMessageRow>(
+    `
+      SELECT
+        dm_messages.id,
+        dm_messages.thread_id,
+        dm_messages.sender_user_id,
+        users.username AS sender_username,
+        dm_messages.text,
+        dm_messages.created_at
+      FROM dm_messages
+      INNER JOIN users ON users.id = dm_messages.sender_user_id
+      WHERE dm_messages.thread_id = $1
+        AND to_tsvector('simple', coalesce(dm_messages.text, '')) @@ plainto_tsquery('simple', $2)
+      ORDER BY dm_messages.created_at DESC
+      LIMIT $3
+      OFFSET $4;
+    `,
+    [threadId, normalizedQuery, safeLimit, safeOffset],
+  );
+
+  return rows.rows.map(mapDmMessageRow);
 }

@@ -1,6 +1,12 @@
 import request from 'supertest';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import type { ChannelSummary, ChatMessage, DmMessage, DmThreadSummary, ServerSummary } from '@curly-broccoli/shared';
+import type {
+  ChannelSummary,
+  ChatMessage,
+  DmMessage,
+  DmThreadSummary,
+  ServerSummary,
+} from '@curly-broccoli/shared';
 
 beforeAll(() => {
   process.env.JWT_SECRET = process.env.JWT_SECRET ?? 'test-secret';
@@ -25,6 +31,13 @@ const baseDeps = {
   listDmThreadsForUser: vi.fn<() => Promise<DmThreadSummary[]>>().mockResolvedValue([]),
   fetchRecentDmMessages: vi.fn<() => Promise<DmMessage[]>>().mockResolvedValue([]),
   canAccessDmThread: vi.fn<() => Promise<boolean>>().mockResolvedValue(true),
+  canAccessChannel: vi.fn<() => Promise<boolean>>().mockResolvedValue(true),
+  createMessageAttachment: vi.fn(),
+  deleteMessageById: vi.fn(),
+  reportMessageById: vi.fn(),
+  muteUserInServer: vi.fn(),
+  listModerationAuditLogs: vi.fn().mockResolvedValue([]),
+  writeModerationAuditLog: vi.fn(),
 };
 
 describe('GET /health', () => {
@@ -56,13 +69,13 @@ describe('POST /auth/register and /auth/login', () => {
     const createUser = vi.fn().mockResolvedValue({
       id: 'user-1',
       username: 'alice',
-      password_hash: 'x'
+      password_hash: 'x',
     });
 
     const app = createApp({
       ...baseDeps,
       findUserByUsername,
-      createUser
+      createUser,
     });
 
     const res = await request(app)

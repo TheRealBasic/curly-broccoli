@@ -6,7 +6,16 @@ export type ChatMessage = {
   userId?: string | null;
   user: string;
   text: string;
+  attachments: MessageAttachment[];
   createdAt: string;
+};
+
+export type MessageAttachment = {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  url: string;
 };
 
 export type ServerSummary = {
@@ -62,7 +71,7 @@ export type ClientEvent =
     }
   | {
       type: 'chat:send';
-      payload: { text: string };
+      payload: { text: string; attachmentIds?: string[] };
     }
   | {
       type: 'dm:join-thread';

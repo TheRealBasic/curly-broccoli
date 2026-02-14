@@ -8,6 +8,7 @@ import type {
   ChatMessage,
   DmMessage,
   DmThreadSummary,
+  MessageAttachment,
   ServerMember,
   ServerSummary,
 } from '@curly-broccoli/shared';
@@ -33,6 +34,14 @@ type ChatMessageRow = {
   user_name: string;
   text: string;
   created_at: Date | string;
+};
+
+type MessageAttachmentRow = {
+  id: string;
+  file_name: string;
+  mime_type: string;
+  size_bytes: number;
+  storage_path: string;
 };
 
 type UserRow = {
@@ -85,15 +94,62 @@ type DmMessageRow = {
   created_at: Date | string;
 };
 
-function mapRow(row: ChatMessageRow): ChatMessage {
+function mapAttachmentRow(row: MessageAttachmentRow): MessageAttachment {
+  return {
+    id: row.id,
+    fileName: row.file_name,
+    mimeType: row.mime_type,
+    sizeBytes: row.size_bytes,
+    url: `/${row.storage_path}`,
+  };
+}
+
+function mapRow(row: ChatMessageRow, attachments: MessageAttachment[] = []): ChatMessage {
   return {
     id: row.id,
     channelId: row.channel_id,
     userId: row.user_id,
     user: row.user_name,
     text: row.text,
+    attachments,
     createdAt: new Date(row.created_at).toISOString(),
   };
+}
+
+async function fetchAttachmentsForMessages(messageIds: string[]) {
+  if (messageIds.length === 0) {
+    return new Map<string, MessageAttachment[]>();
+  }
+
+  const rows = await pool.query<
+    MessageAttachmentRow & {
+      message_id: string;
+    }
+  >(
+    `
+      SELECT
+        links.message_id,
+        attachments.id,
+        attachments.file_name,
+        attachments.mime_type,
+        attachments.size_bytes,
+        attachments.storage_path
+      FROM chat_message_attachments links
+      INNER JOIN message_attachments attachments ON attachments.id = links.attachment_id
+      WHERE links.message_id = ANY($1::uuid[])
+      ORDER BY links.created_at ASC;
+    `,
+    [messageIds],
+  );
+
+  const byMessageId = new Map<string, MessageAttachment[]>();
+  for (const row of rows.rows) {
+    const list = byMessageId.get(row.message_id) ?? [];
+    list.push(mapAttachmentRow(row));
+    byMessageId.set(row.message_id, list);
+  }
+
+  return byMessageId;
 }
 
 function mapDmThreadRow(row: DmThreadRow): DmThreadSummary {
@@ -417,24 +473,104 @@ export async function addMemberByUsername(serverId: string, username: string, ac
   return { userId: user.id, username: user.username };
 }
 
-export async function saveMessage(message: ChatMessage) {
-  const inserted = await pool.query<ChatMessageRow>(
+export async function createMessageAttachment(attachment: {
+  id: string;
+  uploadedByUserId: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  storagePath: string;
+}) {
+  const inserted = await pool.query<MessageAttachmentRow>(
     `
-      INSERT INTO chat_messages (id, channel_id, user_id, user_name, text, created_at)
+      INSERT INTO message_attachments (id, uploaded_by_user_id, file_name, mime_type, size_bytes, storage_path)
       VALUES ($1, $2, $3, $4, $5, $6)
-      RETURNING id, channel_id, user_id, user_name, text, created_at;
+      RETURNING id, file_name, mime_type, size_bytes, storage_path;
     `,
     [
-      message.id,
-      message.channelId,
-      message.userId ?? null,
-      message.user,
-      message.text,
-      message.createdAt,
+      attachment.id,
+      attachment.uploadedByUserId,
+      attachment.fileName,
+      attachment.mimeType,
+      attachment.sizeBytes,
+      attachment.storagePath,
     ],
   );
 
-  return mapRow(inserted.rows[0]);
+  return mapAttachmentRow(inserted.rows[0]);
+}
+
+export async function listMessageAttachmentsByIds(attachmentIds: string[], userId: string) {
+  if (attachmentIds.length === 0) {
+    return [];
+  }
+
+  const rows = await pool.query<MessageAttachmentRow>(
+    `
+      SELECT id, file_name, mime_type, size_bytes, storage_path
+      FROM message_attachments
+      WHERE uploaded_by_user_id = $2
+        AND id = ANY($1::uuid[])
+      ORDER BY created_at ASC;
+    `,
+    [attachmentIds, userId],
+  );
+
+  return rows.rows.map(mapAttachmentRow);
+}
+
+export async function saveMessage(message: {
+  id: string;
+  channelId: string;
+  userId?: string | null;
+  user: string;
+  text: string;
+  createdAt: string;
+  attachmentIds?: string[];
+}) {
+  await pool.query('BEGIN');
+
+  try {
+    const inserted = await pool.query<ChatMessageRow>(
+      `
+        INSERT INTO chat_messages (id, channel_id, user_id, user_name, text, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING id, channel_id, user_id, user_name, text, created_at;
+      `,
+      [
+        message.id,
+        message.channelId,
+        message.userId ?? null,
+        message.user,
+        message.text,
+        message.createdAt,
+      ],
+    );
+
+    if (message.attachmentIds && message.attachmentIds.length > 0) {
+      await pool.query(
+        `
+          INSERT INTO chat_message_attachments (message_id, attachment_id)
+          SELECT $1, attachment.id
+          FROM message_attachments attachment
+          WHERE attachment.id = ANY($2::uuid[])
+            AND attachment.uploaded_by_user_id = $3;
+        `,
+        [message.id, message.attachmentIds, message.userId ?? null],
+      );
+    }
+
+    await pool.query('COMMIT');
+
+    const attachments = await listMessageAttachmentsByIds(
+      message.attachmentIds ?? [],
+      message.userId ?? '',
+    );
+    return mapRow(inserted.rows[0], attachments);
+  } catch (error) {
+    await pool.query('ROLLBACK');
+    throw error;
+  }
 }
 
 export async function fetchRecentMessages(channelId: string, limit = chatHistoryLimit) {
@@ -450,7 +586,11 @@ export async function fetchRecentMessages(channelId: string, limit = chatHistory
     [channelId, safeLimit],
   );
 
-  return rows.rows.reverse().map(mapRow);
+  const messages = rows.rows.reverse();
+  const attachmentsByMessageId = await fetchAttachmentsForMessages(
+    messages.map((message) => message.id),
+  );
+  return messages.map((message) => mapRow(message, attachmentsByMessageId.get(message.id) ?? []));
 }
 
 export async function deleteMessageById(messageId: string, actorUserId: string) {

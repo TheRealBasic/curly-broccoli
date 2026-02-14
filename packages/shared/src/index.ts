@@ -104,6 +104,7 @@ export type ClientEvent =
         channelId: string;
         targetUserId: string;
         description?: { type: string; sdp?: string };
+        iceRestart?: boolean;
         candidate?: {
           candidate: string;
           sdpMid?: string | null;
@@ -209,6 +210,7 @@ export type ServerEvent =
         channelId: string;
         fromUserId: string;
         description?: { type: string; sdp?: string };
+        iceRestart?: boolean;
         candidate?: {
           candidate: string;
           sdpMid?: string | null;

@@ -546,6 +546,8 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
     sockets.add(socket);
     voiceConnectionsByChannel.set(channelId, sockets);
 
+    console.info('[voice] join', { channelId, userId: currentUser.userId });
+
     sendEvent(socket, {
       type: 'voice:participants',
       payload: { channelId, participants: listVoiceParticipants(channelId) },
@@ -570,6 +572,11 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
   }
 
   if (event.type === 'voice:leave-channel') {
+    const channelId = voiceChannelByConnection.get(socket);
+    const currentUser = userByConnection.get(socket);
+    if (channelId && currentUser) {
+      console.info('[voice] leave', { channelId, userId: currentUser.userId });
+    }
     leaveVoiceChannel(socket);
     return;
   }
@@ -599,6 +606,7 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
     );
 
     if (!targetSocket) {
+      console.warn('[voice] signal_failure_peer_offline', { channelId, targetUserId });
       sendEvent(socket, { type: 'error', payload: { message: 'Voice peer is offline.' } });
       return;
     }
@@ -609,6 +617,7 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
         channelId,
         fromUserId: currentUser.userId,
         description: event.payload.description,
+        iceRestart: event.payload.iceRestart,
         candidate: event.payload.candidate,
       },
     });

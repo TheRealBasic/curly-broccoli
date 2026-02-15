@@ -3065,8 +3065,8 @@ export function App() {
   if (!auth) {
     return (
       <main className="chat-layout auth-layout">
-        <h1>{APP_NAME}</h1>
-        <p className="subtle">Create an account or sign in to enter chat.</p>
+        <h1 className="type-page-title text-primary">{APP_NAME}</h1>
+        <p className="subtle type-body text-secondary">Create an account or sign in to enter chat.</p>
 
         <div className="auth-toggle" role="tablist" aria-label="Authentication mode">
           <button
@@ -3119,11 +3119,11 @@ export function App() {
     <main className="chat-layout guild-layout">
       <header className="chat-header">
         <div>
-          <h1>{APP_NAME}</h1>
-          <p className="subtle">
+          <h1 className="type-page-title text-primary">{APP_NAME}</h1>
+          <p className="subtle type-body text-secondary">
             Signed in as <strong>{auth.user.username}</strong>
           </p>
-          <p className="subtle">
+          <p className="subtle type-meta text-muted">
             Status: <strong>{connectionState}</strong> · {systemMessage}
           </p>
         </div>
@@ -3135,7 +3135,7 @@ export function App() {
       <section className="guild-shell">
         <aside className="app-rail left-rail">
           <section className="sidebar rail-panel always-visible" data-priority="always-visible">
-            <h3>
+            <h3 className="type-section-header text-primary">
               Servers <span className="panel-priority">always visible</span>
             </h3>
           <div className="list">
@@ -3161,7 +3161,7 @@ export function App() {
           </section>
 
           <section className="sidebar rail-panel always-visible" data-priority="always-visible">
-            <h3>
+            <h3 className="type-section-header text-primary">
               Channels {totalChannelUnread > 0 ? `(${totalChannelUnread})` : ''}{' '}
               <span className="panel-priority">always visible</span>
             </h3>
@@ -3203,7 +3203,7 @@ export function App() {
           </section>
 
           <section className="sidebar rail-panel collapsible-panel" data-priority="collapsible">
-            <h3>
+            <h3 className="type-section-header text-primary">
               Direct Messages {totalDmUnread > 0 ? `(${totalDmUnread})` : ''}{' '}
               <span className="panel-priority">collapsible</span>
             </h3>
@@ -3247,8 +3247,8 @@ export function App() {
           <aside className="app-rail right-rail">
             <section className="voice-panel rail-panel always-visible" data-priority="always-visible">
             <div>
-              <strong>Voice</strong>
-              <p className="subtle">
+              <strong className="type-panel-header text-primary">Voice</strong>
+              <p className="subtle type-body text-secondary">
                 {voiceChannelId === activeChannelId
                   ? `Connected in #${channels.find((channel) => channel.id === activeChannelId)?.name ?? 'channel'}`
                   : 'Join voice for the active channel'}
@@ -3294,8 +3294,8 @@ export function App() {
 
             <section className="voice-panel rail-panel collapsible-panel" data-priority="collapsible">
             <div>
-              <strong>Co-watch</strong>
-              <p className="subtle">Synchronized media viewing in this channel.</p>
+              <strong className="type-panel-header text-primary">Co-watch</strong>
+              <p className="subtle type-body text-secondary">Synchronized media viewing in this channel.</p>
             </div>
             <div className="inline-form">
               <input
@@ -3408,7 +3408,7 @@ export function App() {
                 </label>
               )}
             </div>
-            {coWatchLocalMedia && <p className="subtle">Loaded local media: {coWatchLocalMedia.fileName}</p>}
+            {coWatchLocalMedia && <p className="subtle type-meta text-muted">Loaded local media: {coWatchLocalMedia.fileName}</p>}
             {coWatchState && (
               <video
                 ref={watchVideoRef}
@@ -3446,7 +3446,7 @@ export function App() {
             </section>
 
           <div className="share-consent-card">
-            <p className="subtle">
+            <p className="subtle type-meta text-muted diagnostic-copy">
               Browser consent: <strong>{screenConsentState}</strong> · In-app consent:{' '}
               <strong>{activeScreenShare ? 'active' : 'not sharing'}</strong>
             </p>
@@ -3461,16 +3461,16 @@ export function App() {
                 <option value="motion">Motion/video (30fps · 2.5Mbps)</option>
               </select>
             </label>
-            <p className="subtle">
+            <p className="subtle diagnostic-copy">
               Network adaptation: <strong>{screenNetworkQuality}</strong> (packet loss + RTT aware)
             </p>
-            <p className="subtle">
+            <p className="subtle diagnostic-copy">
               Topology: P2P up to {SCREEN_P2P_PARTICIPANT_THRESHOLD} participants. Planned SFU
               migration above this threshold.
             </p>
-            {screenShareScopeWarning && <p className="subtle">{screenShareScopeWarning}</p>}
+            {screenShareScopeWarning && <p className="subtle diagnostic-copy">{screenShareScopeWarning}</p>}
             {(currentMember ? !currentMember.canShareScreen : false) && (
-              <p className="subtle">
+              <p className="subtle diagnostic-copy">
                 Role gate active: you do not have the "Can share screen" permission.
               </p>
             )}
@@ -3485,7 +3485,7 @@ export function App() {
           )}
 
             <section className="voice-panel highlight-panel rail-panel collapsible-panel" data-priority="collapsible">
-            <h3>Highlights</h3>
+            <h3 className="type-section-header text-primary">Highlights</h3>
             <label>
               <input
                 type="checkbox"
@@ -3494,8 +3494,8 @@ export function App() {
               />
               I consent to local rolling capture of recent voice/screen moments.
             </label>
-            <p className="subtle">Status: {highlightRecorderState === 'buffering' ? 'recording (rolling 30s)' : highlightRecorderState}</p>
-            <p className="subtle">Privacy: clips are temporary in memory and replaced after 30 seconds until you save.</p>
+            <p className="subtle type-meta text-muted diagnostic-copy">Status: {highlightRecorderState === 'buffering' ? 'recording (rolling 30s)' : highlightRecorderState}</p>
+            <p className="subtle type-meta text-muted diagnostic-copy">Privacy: clips are temporary in memory and replaced after 30 seconds until you save.</p>
             <label>
               <input
                 type="checkbox"
@@ -3514,7 +3514,7 @@ export function App() {
             </section>
 
             <section className="voice-panel rail-panel collapsible-panel" data-priority="collapsible">
-            <h3>Playful audio</h3>
+            <h3 className="type-section-header text-primary">Playful audio</h3>
             <div className="voice-panel-actions">
               <label>
                 Voice effect
@@ -3568,7 +3568,7 @@ export function App() {
                 onChange={(event) => setInputGain(Number(event.target.value))}
               />
             </label>
-            <div className="subtle">
+            <div className="subtle type-meta text-muted diagnostic-copy">
               Join success: {voiceDashboard.joinSuccessRate.toFixed(0)}% · Median setup:{' '}
               {voiceDashboard.medianSetupMs.toFixed(0)}ms
             </div>
@@ -3580,7 +3580,7 @@ export function App() {
                 <span key={participant.userId} className="voice-chip">
                   {participant.username}
                   {(activeEffectByUserId[participant.userId] ?? participant.activeVoiceEffect ?? 'none') !== 'none' && (
-                    <small className="subtle">fx:{activeEffectByUserId[participant.userId] ?? participant.activeVoiceEffect}</small>
+                    <small className="subtle type-meta text-muted">fx:{activeEffectByUserId[participant.userId] ?? participant.activeVoiceEffect}</small>
                   )}
                   <strong className="voice-state">
                     {peerStateByUserId[participant.userId] ?? 'connecting'}
@@ -3606,10 +3606,10 @@ export function App() {
                 </span>
               ))}
             {voiceChannelId === activeChannelId && voiceParticipants.length <= 1 && (
-              <span className="subtle">No other participants yet.</span>
+              <span className="subtle type-meta text-muted">No other participants yet.</span>
             )}
             </div>
-            <p className="subtle">
+            <p className="subtle diagnostic-copy">
             Disconnect causes:{' '}
             {Object.entries(voiceDashboard.disconnectCauses)
               .map(([cause, count]) => `${cause}: ${count}`)
@@ -3665,7 +3665,7 @@ export function App() {
               >
                 Previous
               </button>
-              <span className="subtle">Page {searchCursorTrail.length}</span>
+              <span className="subtle type-meta text-muted">Page {searchCursorTrail.length}</span>
               <button
                 type="button"
                 onClick={() => {
@@ -3688,7 +3688,7 @@ export function App() {
               <article className="screen-share-card">
                 <header>
                   <strong>{activeScreenShare.presenter.username}</strong>
-                  <span className="subtle">is sharing their screen</span>
+                  <span className="subtle type-meta text-secondary">is sharing their screen</span>
                 </header>
                 <video
                   ref={remoteScreenVideoRef}
@@ -3713,9 +3713,9 @@ export function App() {
               <article key={message.id} className="message">
                 <header>
                   <strong>{'user' in message ? message.user : message.senderUsername}</strong>
-                  <time>{new Date(message.createdAt).toLocaleTimeString()}</time>
+                  <time className="type-meta text-muted">{new Date(message.createdAt).toLocaleTimeString()}</time>
                   {'editedAt' in message && message.editedAt && (
-                    <span className="subtle">(edited)</span>
+                    <span className="subtle type-meta text-muted">(edited)</span>
                   )}
                 </header>
                 {'user' in message && editingMessageId === message.id ? (
@@ -3744,7 +3744,7 @@ export function App() {
                     </button>
                   </form>
                 ) : (
-                  <p>{renderMessageText(message.text, auth.user.username)}</p>
+                  <p className="type-body text-primary">{renderMessageText(message.text, auth.user.username)}</p>
                 )}
                 {'attachments' in message && message.attachments.length > 0 && (
                   <div className="attachment-grid">
@@ -3826,9 +3826,9 @@ export function App() {
               <article className="message" aria-live="polite">
                 <header>
                   <strong>{streamingAiReply.botDisplayName}</strong>
-                  <span className="subtle">replying…</span>
+                  <span className="subtle type-meta text-secondary">replying…</span>
                 </header>
-                <p>{streamingAiReply.text || '…'}</p>
+                <p className="type-body text-primary">{streamingAiReply.text || '…'}</p>
               </article>
             )}
           </section>
@@ -3951,7 +3951,7 @@ export function App() {
 
         <aside className="app-rail context-rail">
           <section className="sidebar rail-panel collapsible-panel" data-priority="collapsible">
-            <h3>
+            <h3 className="type-section-header text-primary">
               AI Settings <span className="panel-priority">collapsible</span>
             </h3>
           {activeServerAiDraft ? (
@@ -3963,7 +3963,7 @@ export function App() {
                 <span className={activeServerAiDraft.status.degradedMode ? 'status-badge warning' : 'status-badge'}>degraded mode</span>
               </div>
               <label>
-                <span className="subtle">Enable assistant</span>
+                <span className="subtle type-meta text-secondary">Enable assistant</span>
                 <input
                   type="checkbox"
                   checked={activeServerAiDraft.enabled}
@@ -3972,7 +3972,7 @@ export function App() {
                 />
               </label>
               <label>
-                <span className="subtle">Model</span>
+                <span className="subtle type-meta text-secondary">Model</span>
                 <select
                   value={activeServerAiDraft.model}
                   disabled={!isServerOwner}
@@ -3986,7 +3986,7 @@ export function App() {
                 </select>
               </label>
               <label>
-                <span className="subtle">System prompt</span>
+                <span className="subtle type-meta text-secondary">System prompt</span>
                 <textarea
                   rows={4}
                   value={activeServerAiDraft.systemPrompt ?? ''}
@@ -3999,7 +3999,7 @@ export function App() {
                 />
               </label>
               <label>
-                <span className="subtle">Temperature</span>
+                <span className="subtle type-meta text-secondary">Temperature</span>
                 <input
                   type="number"
                   min={0}
@@ -4013,7 +4013,7 @@ export function App() {
                 />
               </label>
               <label>
-                <span className="subtle">Max reply length (tokens)</span>
+                <span className="subtle type-meta text-secondary">Max reply length (tokens)</span>
                 <input
                   type="number"
                   min={1}
@@ -4025,7 +4025,7 @@ export function App() {
                 />
               </label>
               <label>
-                <span className="subtle">Who can invoke AI</span>
+                <span className="subtle type-meta text-secondary">Who can invoke AI</span>
                 <select
                   value={activeServerAiDraft.invocationPolicy}
                   disabled={!isServerOwner}
@@ -4037,15 +4037,15 @@ export function App() {
                   <option value="roles">Roles (coming soon)</option>
                 </select>
               </label>
-              {isServerOwner ? <button type="submit">Save AI settings</button> : <small className="subtle">Owner-only settings</small>}
+              {isServerOwner ? <button type="submit">Save AI settings</button> : <small className="subtle type-meta text-muted">Owner-only settings</small>}
             </form>
           ) : (
-            <p className="subtle">No AI settings loaded.</p>
+            <p className="subtle type-meta text-muted">No AI settings loaded.</p>
           )}
           </section>
 
           <section className="sidebar rail-panel always-visible" data-priority="always-visible">
-            <h3>
+            <h3 className="type-section-header text-primary">
               Members <span className="panel-priority">always visible</span>
             </h3>
           {isServerOwner && activeServer && (
@@ -4102,9 +4102,9 @@ export function App() {
                     className={isOnline ? 'presence-dot online' : 'presence-dot offline'}
                     aria-hidden="true"
                   />
-                  <span>{member.username}</span>
-                  <small className="subtle">{member.role}</small>
-                  {!member.canShareScreen && <small className="subtle">no-share</small>}
+                  <span className="type-body text-primary">{member.username}</span>
+                  <small className="subtle type-meta text-muted">{member.role}</small>
+                  {!member.canShareScreen && <small className="subtle type-meta text-muted">no-share</small>}
                   {isServerOwner && member.userId !== auth.user.id && (
                     <>
                       {member.isMuted ? (
@@ -4116,7 +4116,7 @@ export function App() {
                           Mute
                         </button>
                       )}
-                      <label className="subtle">
+                      <label className="subtle type-meta text-secondary">
                         <input
                           type="checkbox"
                           checked={member.canShareScreen}
@@ -4136,7 +4136,7 @@ export function App() {
           </section>
 
           <details className="sidebar rail-panel advanced-panel" data-priority="advanced" open={false}>
-            <summary>
+            <summary className="type-section-header text-primary">
               Diagnostics & status internals <span className="panel-priority">advanced</span>
             </summary>
             <section className="notification-settings rail-stack">
@@ -4159,16 +4159,16 @@ export function App() {
                 />
                 Enable spatial audio
               </label>
-              <small className="subtle">Permission: {notificationPermission}</small>
+              <small className="subtle type-meta text-muted">Permission: {notificationPermission}</small>
               {!spatialAudioAvailable && (
-                <small className="subtle">Spatial audio unavailable in this browser.</small>
+                <small className="subtle type-meta text-muted">Spatial audio unavailable in this browser.</small>
               )}
             </section>
             <div className="list">
               {auditLogs.map((log) => (
                 <div key={log.id} className="member-row">
-                  <span>{log.action}</span>
-                  <small className="subtle">{log.actorUsername}</small>
+                  <span className="type-meta text-muted">{log.action}</span>
+                  <small className="type-meta text-muted">{log.actorUsername}</small>
                 </div>
               ))}
               {auditLogs.length === 0 && <p className="empty">No moderation events.</p>}

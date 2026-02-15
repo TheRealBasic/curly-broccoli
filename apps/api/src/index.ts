@@ -109,7 +109,6 @@ const app = createApp({
   searchDmMessages: searchDmMessagesPage,
   canAccessDmThread,
   canAccessChannel,
-  canManageScreenShare,
   createMessageAttachment,
   notifyMessageEdited: ({ channelId, messageId, text, editedAt }) => {
     broadcastToChannel(channelId, {
@@ -592,7 +591,7 @@ function removePresenceSubscription(socket: net.Socket, serverId: string) {
 }
 
 function listVoiceParticipants(channelId: string) {
-  const participantsByUserId = new Map<string, { userId: string; username: string }>();
+  const participantsByUserId = new Map<string, { userId: string; username: string; activeVoiceEffect: VoiceEffectMode }>();
   for (const socket of voiceConnectionsByChannel.get(channelId) ?? []) {
     const authUser = userByConnection.get(socket);
     if (!authUser) {
@@ -1901,7 +1900,7 @@ async function handleClientEvent(socket: net.Socket, raw: string) {
   }
 }
 
-server.on('upgrade', (req, socket) => {
+server.on('upgrade', (req, socket: net.Socket) => {
   const requestUrl = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
   const token = requestUrl.searchParams.get('token');
 

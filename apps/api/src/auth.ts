@@ -13,7 +13,7 @@ const PASSWORD_KEY_LENGTH = 64;
 const ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
 const REFRESH_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60;
 
-const jwtSecret = process.env.JWT_SECRET;
+const jwtSecret = process.env.JWT_SECRET as string;
 if (!jwtSecret) {
   throw new Error('JWT_SECRET is required to start the API.');
 }

@@ -517,6 +517,22 @@ h1 {
   margin-bottom: 0.5rem;
 }
 
+.accordion-panel > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.accordion-panel > summary::-webkit-details-marker {
+  display: none;
+}
+
+.accordion-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-8);
+}
+
 .unread-badge {
   margin-left: 0.35rem;
   display: inline-flex;
@@ -748,7 +764,6 @@ h1 {
   color: var(--text-danger);
   background: #fef2f2;
 }
-
 
 .sidebar,
 .voice-panel,

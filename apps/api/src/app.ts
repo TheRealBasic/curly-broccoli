@@ -185,6 +185,7 @@ type AppDependencies = {
     temperature: number | null;
     allowDmInvocation: boolean;
     invocationPolicy: 'everyone' | 'roles';
+    disabledReason: string | null;
   }>;
   listModerationAuditLogs: (
     serverId: string,
@@ -819,8 +820,8 @@ export function createApp(deps: AppDependencies) {
 
     try {
       const page = await deps.searchChannelMessages(channelId, query, {
-        limit,
-        offset,
+        limit: limit ?? undefined,
+        offset: offset ?? undefined,
         before: before || undefined,
         after: after || undefined,
       });
@@ -837,7 +838,10 @@ export function createApp(deps: AppDependencies) {
     originalName: string;
     mimeType: string;
     fileBuffer: Buffer;
-  }) {
+  }): Promise<
+    | { error: { status: number; message: string }; attachment?: undefined }
+    | { attachment: Awaited<ReturnType<AppDependencies['createMessageAttachment']>>; error?: undefined }
+  > {
     const allowed = await deps.canAccessChannel(params.channelId, params.authUserId);
     if (!allowed) {
       return { error: { status: 403, message: 'You cannot upload to this channel.' } } as const;
@@ -922,7 +926,7 @@ export function createApp(deps: AppDependencies) {
       fileBuffer: Buffer.from(base64Data, 'base64'),
     });
 
-    if ('error' in result) {
+    if (result.error) {
       res.status(result.error.status).json({ error: result.error.message });
       return;
     }
@@ -970,7 +974,7 @@ export function createApp(deps: AppDependencies) {
       fileBuffer: file.buffer,
     });
 
-    if ('error' in result) {
+    if (result.error) {
       res.status(result.error.status).json({ error: result.error.message });
       return;
     }
@@ -1210,8 +1214,8 @@ export function createApp(deps: AppDependencies) {
 
     try {
       const page = await deps.searchDmMessages(threadId, query, {
-        limit,
-        offset,
+        limit: limit ?? undefined,
+        offset: offset ?? undefined,
         before: before || undefined,
         after: after || undefined,
       });
@@ -1778,7 +1782,7 @@ export function createApp(deps: AppDependencies) {
     }
 
     try {
-      const logs = await deps.listModerationAuditLogs(req.params.serverId, auth.userId, limit);
+      const logs = await deps.listModerationAuditLogs(req.params.serverId, auth.userId, limit ?? undefined);
       res.json({ logs });
     } catch {
       res.status(403).json({ error: 'Only server owners can view audit logs.' });

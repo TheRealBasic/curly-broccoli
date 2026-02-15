@@ -8,10 +8,11 @@ import type {
   ChatMessage,
   DmMessage,
   DmThreadSummary,
+  type AttachmentCategory,
   MessageAttachment,
   ServerMember,
   ServerSummary,
-  type CoWatchPlaybackState,
+  CoWatchPlaybackState,
 } from '@curly-broccoli/shared';
 
 const DEFAULT_HISTORY_LIMIT = 50;

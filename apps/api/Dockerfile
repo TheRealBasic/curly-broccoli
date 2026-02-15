@@ -1,4 +1,4 @@
-ARG NODE_IMAGE=public.ecr.aws/docker/library/node:20-alpine
+ARG NODE_IMAGE=node:20-alpine
 
 FROM ${NODE_IMAGE} AS base
 WORKDIR /app

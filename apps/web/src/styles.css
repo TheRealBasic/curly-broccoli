@@ -203,6 +203,91 @@ h1 {
   padding-top: var(--space-16);
 }
 
+.status-strip {
+  margin-top: calc(var(--space-16) * -0.5);
+  display: grid;
+  gap: var(--space-8);
+}
+
+.status-strip-badges {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+}
+
+.status-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-8);
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.78rem;
+  background: #f8fafc;
+  color: var(--text-secondary);
+}
+
+.status-chip-label {
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  color: var(--text-muted);
+  font-size: 0.68rem;
+}
+
+.status-chip[data-state='connected'] {
+  border-color: #6ee7b7;
+  background: #ecfdf5;
+  color: var(--text-success-strong);
+}
+
+.status-chip[data-state='idle'] {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+  color: var(--text-secondary);
+}
+
+.status-chip[data-state='error'] {
+  border-color: #fca5a5;
+  background: #fef2f2;
+  color: var(--text-danger);
+}
+
+.status-strip-notices {
+  display: grid;
+  gap: var(--space-8);
+}
+
+.status-notice {
+  margin: 0;
+  border-radius: 0.4rem;
+  padding: var(--space-8) var(--space-12);
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  color: var(--text-secondary);
+}
+
+.status-notice[data-state='error'] {
+  border-color: #fca5a5;
+  background: #fef2f2;
+  color: var(--text-danger);
+}
+
+.status-notice[data-state='warning'] {
+  border-color: #fcd34d;
+  background: #fffbeb;
+  color: var(--text-warning);
+}
+
+.status-notice-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-12);
+}
+
 .guild-shell {
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr) 320px;
@@ -755,18 +840,6 @@ h1 {
   background: #f8fafc;
   border-radius: 0.5rem;
   padding: var(--space-12) var(--space-16);
-  margin-bottom: var(--space-12);
-}
-
-.share-banner {
-  border: 1px solid #f59e0b;
-  background: #fffbeb;
-  color: var(--text-secondary);
-  border-radius: 0.5rem;
-  padding: var(--space-12) var(--space-16);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
   margin-bottom: var(--space-12);
 }
 

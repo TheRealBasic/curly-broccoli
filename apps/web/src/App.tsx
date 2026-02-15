@@ -3071,14 +3071,14 @@ export function App() {
         <div className="auth-toggle" role="tablist" aria-label="Authentication mode">
           <button
             type="button"
-            className={authMode === 'login' ? 'active' : ''}
+            className={`btn ${authMode === 'login' ? 'btn-primary active' : 'btn-secondary'} control-full`}
             onClick={() => setAuthMode('login')}
           >
             Login
           </button>
           <button
             type="button"
-            className={authMode === 'register' ? 'active' : ''}
+            className={`btn ${authMode === 'register' ? 'btn-primary active' : 'btn-secondary'} control-full`}
             onClick={() => setAuthMode('register')}
           >
             Register
@@ -3089,6 +3089,7 @@ export function App() {
           <label>
             Username
             <input
+              className={`input input-default control-full ${error ? 'input-invalid' : ''}`}
               value={usernameInput}
               onChange={(e) => setUsernameInput(e.target.value)}
               minLength={3}
@@ -3099,6 +3100,7 @@ export function App() {
           <label>
             Password
             <input
+              className={`input input-default control-full ${error ? 'input-invalid' : ''}`}
               value={passwordInput}
               onChange={(e) => setPasswordInput(e.target.value)}
               type="password"
@@ -3107,7 +3109,7 @@ export function App() {
               required
             />
           </label>
-          <button type="submit">{authMode === 'login' ? 'Sign in' : 'Create account'}</button>
+          <button type="submit" className="btn btn-primary control-full">{authMode === 'login' ? 'Sign in' : 'Create account'}</button>
         </form>
 
         {error && <p className="error">{error}</p>}
@@ -3127,7 +3129,7 @@ export function App() {
             Status: <strong>{connectionState}</strong> · {systemMessage}
           </p>
         </div>
-        <button type="button" className="logout-button" onClick={logout}>
+        <button type="button" className="btn btn-secondary btn-auto" onClick={logout}>
           Logout
         </button>
       </header>
@@ -3152,11 +3154,12 @@ export function App() {
           </div>
             <form className="inline-form" onSubmit={createServer}>
             <input
+              className="input input-default control-full"
               value={serverNameInput}
               onChange={(event) => setServerNameInput(event.target.value)}
               placeholder="New server"
             />
-            <button type="submit">Create</button>
+            <button type="submit" className="btn btn-primary btn-auto">Create</button>
             </form>
           </section>
 
@@ -3182,21 +3185,23 @@ export function App() {
           </div>
             <form className="inline-form" onSubmit={createChannel}>
             <input
+              className="input input-default control-full"
               value={channelNameInput}
               onChange={(event) => setChannelNameInput(event.target.value)}
               placeholder="New channel"
             />
-            <button type="submit" disabled={!activeServerId}>
+            <button type="submit" className="btn btn-primary btn-auto" disabled={!activeServerId}>
               Add
             </button>
             </form>
             <form className="inline-form" onSubmit={addMember}>
             <input
+              className="input input-default control-full"
               value={inviteUsernameInput}
               onChange={(event) => setInviteUsernameInput(event.target.value)}
               placeholder="Invite username"
             />
-            <button type="submit" disabled={!activeServerId}>
+            <button type="submit" className="btn btn-primary btn-auto" disabled={!activeServerId}>
               Invite
             </button>
             </form>
@@ -3231,11 +3236,12 @@ export function App() {
           </div>
           <form className="inline-form" onSubmit={startDm}>
             <input
+              className="input input-default control-full"
               value={dmUsernameInput}
               onChange={(event) => setDmUsernameInput(event.target.value)}
               placeholder="Start DM (username)"
             />
-            <button type="submit">Start</button>
+            <button type="submit" className="btn btn-primary btn-auto">Start</button>
           </form>
             <button type="button" className="list-item" onClick={() => setChatMode('channel')}>
               Back to channels
@@ -3256,21 +3262,22 @@ export function App() {
             </div>
             <div className="voice-panel-actions">
               {voiceChannelId === activeChannelId ? (
-                <button type="button" onClick={leaveVoice}>
+                <button type="button" className="btn btn-success btn-auto" onClick={leaveVoice}>
                   Leave voice
                 </button>
               ) : (
-                <button type="button" onClick={() => void joinVoice()} disabled={!activeChannelId}>
+                <button type="button" className="btn btn-success btn-auto" onClick={() => void joinVoice()} disabled={!activeChannelId}>
                   Join voice
                 </button>
               )}
               {activeScreenShare?.presenter.userId === auth.user.id ? (
-                <button type="button" onClick={stopScreenShare}>
+                <button type="button" className="btn btn-danger btn-auto" onClick={stopScreenShare}>
                   Stop sharing
                 </button>
               ) : (
                 <button
                   type="button"
+                  className="btn btn-success btn-auto"
                   onClick={() => void startScreenShare()}
                   disabled={
                     voiceChannelId !== activeChannelId ||
@@ -3285,7 +3292,7 @@ export function App() {
               {isServerOwner &&
                 activeScreenShare &&
                 activeScreenShare.presenter.userId !== auth.user.id && (
-                  <button type="button" onClick={forceStopScreenShare}>
+                  <button type="button" className="btn btn-danger btn-auto" onClick={forceStopScreenShare}>
                     Force stop share
                   </button>
                 )}
@@ -3299,12 +3306,14 @@ export function App() {
             </div>
             <div className="inline-form co-watch-source-row">
               <input
+                className="input input-default control-full"
                 value={coWatchUrlInput}
                 onChange={(event) => setCoWatchUrlInput(event.target.value)}
                 placeholder="Paste media URL"
               />
               <button
                 type="button"
+                className="btn btn-primary btn-auto"
                 onClick={() =>
                   startCoWatchFromMedia({ sourceType: 'url', url: coWatchUrlInput.trim(), title: coWatchUrlInput.trim() })
                 }
@@ -3313,7 +3322,7 @@ export function App() {
                 Load URL
               </button>
               <input
-                className="control-file"
+                className="input input-compact control-file"
                 type="file"
                 accept="video/*,audio/*"
                 onChange={(event) => {
@@ -3336,6 +3345,7 @@ export function App() {
             <div className="inline-form co-watch-transport-row">
               <button
                 type="button"
+                className="btn btn-primary btn-auto"
                 onClick={() => {
                   const video = watchVideoRef.current;
                   if (!video || !activeChannelId) {
@@ -3349,6 +3359,7 @@ export function App() {
               </button>
               <button
                 type="button"
+                className="btn btn-primary btn-auto"
                 onClick={() => {
                   const video = watchVideoRef.current;
                   if (!video || !canControlCoWatch) {
@@ -3362,6 +3373,7 @@ export function App() {
               </button>
               <button
                 type="button"
+                className="btn btn-primary btn-auto"
                 onClick={() => {
                   const video = watchVideoRef.current;
                   if (!video || !canControlCoWatch) {
@@ -3376,6 +3388,7 @@ export function App() {
               {coWatchState && coWatchState.hostUserId === auth.user.id && voiceParticipants.find((participant) => participant.userId !== auth.user.id) && (
                 <button
                   type="button"
+                  className="btn btn-ghost btn-auto"
                   onClick={() => {
                     const target = voiceParticipants.find((participant) => participant.userId !== auth.user.id);
                     if (!target || !activeChannelId) {
@@ -3454,6 +3467,7 @@ export function App() {
             <label className="screen-preset-control">
               Screen preset
               <select
+                className="input input-default control-full"
                 value={screenContentType}
                 onChange={(event) => setScreenContentType(event.target.value as ScreenContentType)}
               >
@@ -3479,7 +3493,7 @@ export function App() {
           {activeScreenShare?.presenter.userId === auth.user.id && (
             <div className="share-banner">
               <strong>You are sharing</strong>
-              <button type="button" onClick={stopScreenShare}>
+              <button type="button" className="btn btn-danger btn-auto" onClick={stopScreenShare}>
                 Stop sharing
               </button>
             </div>
@@ -3487,7 +3501,7 @@ export function App() {
 
             <section className="voice-panel highlight-panel rail-panel collapsible-panel" data-priority="collapsible">
             <h3 className="type-section-header text-primary">Highlights</h3>
-            <label>
+            <label className="control-toggle-row">
               <input
                 type="checkbox"
                 checked={highlightCaptureEnabled}
@@ -3497,7 +3511,7 @@ export function App() {
             </label>
             <p className="subtle type-meta text-muted diagnostic-copy">Status: {highlightRecorderState === 'buffering' ? 'recording (rolling 30s)' : highlightRecorderState}</p>
             <p className="subtle type-meta text-muted diagnostic-copy">Privacy: clips are temporary in memory and replaced after 30 seconds until you save.</p>
-            <label>
+            <label className="control-toggle-row">
               <input
                 type="checkbox"
                 checked={highlightUploadOnSave}
@@ -3507,6 +3521,7 @@ export function App() {
             </label>
             <button
               type="button"
+              className="btn btn-primary btn-auto"
               onClick={() => void saveHighlightClip()}
               disabled={!highlightCaptureEnabled || highlightRecorderState === 'saving' || !activeChannelId}
             >
@@ -3520,6 +3535,7 @@ export function App() {
               <label>
                 Voice effect
                 <select
+                  className="input input-default control-full"
                   value={selectedVoiceEffect}
                   disabled={!activeServer?.voiceEffectsEnabled}
                   onChange={(event) => {
@@ -3541,6 +3557,7 @@ export function App() {
                   <button
                     key={clip.id}
                     type="button"
+                    className="btn btn-success btn-auto"
                     disabled={!activeServer?.soundboardEnabled || voiceChannelId !== activeChannelId}
                     onClick={() => playBuiltInClip(clip.id)}
                   >
@@ -3552,7 +3569,7 @@ export function App() {
                 Custom clip
                 <input type="file" accept="audio/*" onChange={(event) => void handleCustomSoundUpload(event.target.files?.[0] ?? null)} />
               </label>
-              <button type="button" onClick={playCustomClip} disabled={!customSoundboardClip || !activeServer?.soundboardEnabled}>
+              <button type="button" className="btn btn-success btn-auto" onClick={playCustomClip} disabled={!customSoundboardClip || !activeServer?.soundboardEnabled}>
                 Play upload
               </button>
             </div>
@@ -3627,17 +3644,19 @@ export function App() {
             }}
           >
             <input
+              className="input input-default control-full"
               value={searchQuery}
               onChange={(event) => setSearchQuery(event.target.value)}
               placeholder={chatMode === 'dm' ? 'Search DMs' : 'Search channel messages'}
               aria-label="Search messages"
             />
-            <button type="submit" disabled={isSearching}>
+            <button type="submit" className="btn btn-primary btn-auto" disabled={isSearching}>
               {isSearching ? 'Searching...' : 'Search'}
             </button>
             {showingSearchResults && (
               <button
                 type="button"
+                className="btn btn-ghost btn-auto"
                 onClick={() => {
                   setSearchQuery('');
                   setSearchResults([]);
@@ -3654,6 +3673,7 @@ export function App() {
             <div className="search-pagination">
               <button
                 type="button"
+                className="btn btn-ghost btn-auto"
                 onClick={() => {
                   if (searchCursorTrail.length <= 1) {
                     return;
@@ -3669,6 +3689,7 @@ export function App() {
               <span className="subtle type-meta text-muted">Page {searchCursorTrail.length}</span>
               <button
                 type="button"
+                className="btn btn-ghost btn-auto"
                 onClick={() => {
                   if (!searchNextCursor) {
                     return;
@@ -3728,14 +3749,16 @@ export function App() {
                     }}
                   >
                     <input
+                      className="input input-default control-full"
                       aria-label="Edit message"
                       value={editDraft}
                       maxLength={300}
                       onChange={(event) => setEditDraft(event.target.value)}
                     />
-                    <button type="submit">Save</button>
+                    <button type="submit" className="btn btn-primary btn-auto">Save</button>
                     <button
                       type="button"
+                      className="btn btn-ghost btn-auto"
                       onClick={() => {
                         setEditingMessageId(null);
                         setEditDraft('');
@@ -3787,7 +3810,7 @@ export function App() {
                 )}
                 {'user' in message && chatMode === 'channel' && (
                   <div className="message-actions">
-                    <button type="button" onClick={() => reportMessage(message.id)}>
+                    <button type="button" className="btn btn-ghost btn-auto" onClick={() => reportMessage(message.id)}>
                       Report
                     </button>
                     {message.userId === auth.user.id && (
@@ -3802,17 +3825,17 @@ export function App() {
                       </button>
                     )}
                     {(message.userId === auth.user.id || isServerOwner) && (
-                      <button type="button" onClick={() => deleteMessage(message.id)}>
+                      <button type="button" className="btn btn-danger btn-auto" onClick={() => deleteMessage(message.id)}>
                         Delete
                       </button>
                     )}
                     {message.userId === null && (
                       <>
-                        <button type="button" onClick={() => void copyTextToClipboard(message.id, message.text)}>
+                        <button type="button" className="btn btn-ghost btn-auto" onClick={() => void copyTextToClipboard(message.id, message.text)}>
                           {copiedAiMessageId === message.id ? 'Copied' : 'Copy'}
                         </button>
                         {aiRequestIdByMessageId[message.id] && (
-                          <button type="button" onClick={() => retryAiPrompt(aiRequestIdByMessageId[message.id])}>
+                          <button type="button" className="btn btn-primary btn-auto" onClick={() => retryAiPrompt(aiRequestIdByMessageId[message.id])}>
                             Retry
                           </button>
                         )}
@@ -3856,6 +3879,7 @@ export function App() {
             }}
           >
             <input
+              className="input input-default"
               value={draft}
               onChange={(event) => {
                 const nextValue = event.target.value;
@@ -3902,7 +3926,7 @@ export function App() {
               maxLength={300}
             />
             {chatMode === 'channel' && (
-              <label className="upload-button">
+              <label className="btn btn-secondary btn-auto upload-button upload-control">
                 Attach
                 <input
                   type="file"
@@ -3922,6 +3946,7 @@ export function App() {
             )}
             <button
               type="submit"
+              className="btn btn-primary btn-auto"
               disabled={
                 connectionState !== 'open' ||
                 (!draft.trim() &&
@@ -3963,7 +3988,7 @@ export function App() {
                 <span className={activeServerAiDraft.status.budgetReached ? 'status-badge danger' : 'status-badge'}>budget reached</span>
                 <span className={activeServerAiDraft.status.degradedMode ? 'status-badge warning' : 'status-badge'}>degraded mode</span>
               </div>
-              <label>
+              <label className="control-toggle-row">
                 <span className="subtle type-meta text-secondary">Enable assistant</span>
                 <input
                   type="checkbox"
@@ -3975,6 +4000,7 @@ export function App() {
               <label>
                 <span className="subtle type-meta text-secondary">Model</span>
                 <select
+                  className="input input-default control-full"
                   value={activeServerAiDraft.model}
                   disabled={!isServerOwner}
                   onChange={(event) => updateActiveServerAiDraft({ model: event.target.value })}
@@ -3989,6 +4015,7 @@ export function App() {
               <label>
                 <span className="subtle type-meta text-secondary">System prompt</span>
                 <textarea
+                  className="input input-default control-full"
                   rows={4}
                   value={activeServerAiDraft.systemPrompt ?? ''}
                   readOnly={!isServerOwner}
@@ -4002,6 +4029,7 @@ export function App() {
               <label>
                 <span className="subtle type-meta text-secondary">Temperature</span>
                 <input
+                  className="input input-default control-full"
                   type="number"
                   min={0}
                   max={2}
@@ -4016,6 +4044,7 @@ export function App() {
               <label>
                 <span className="subtle type-meta text-secondary">Max reply length (tokens)</span>
                 <input
+                  className="input input-default control-full"
                   type="number"
                   min={1}
                   value={activeServerAiDraft.maxTokensPerReply ?? 512}
@@ -4028,6 +4057,7 @@ export function App() {
               <label>
                 <span className="subtle type-meta text-secondary">Who can invoke AI</span>
                 <select
+                  className="input input-default control-full"
                   value={activeServerAiDraft.invocationPolicy}
                   disabled={!isServerOwner}
                   onChange={(event) =>
@@ -4038,7 +4068,7 @@ export function App() {
                   <option value="roles">Roles (coming soon)</option>
                 </select>
               </label>
-              {isServerOwner ? <button type="submit">Save AI settings</button> : <small className="subtle type-meta text-muted">Owner-only settings</small>}
+              {isServerOwner ? <button type="submit" className="btn btn-primary control-full">Save AI settings</button> : <small className="subtle type-meta text-muted">Owner-only settings</small>}
             </form>
           ) : (
             <p className="subtle type-meta text-muted">No AI settings loaded.</p>
@@ -4053,6 +4083,7 @@ export function App() {
             <div className="voice-panel-actions">
               <button
                 type="button"
+                className="btn btn-primary btn-auto"
                 onClick={() =>
                   void authedFetch(`/servers/${activeServer.id}/audio-settings`, {
                     method: 'PATCH',
@@ -4072,6 +4103,7 @@ export function App() {
               </button>
               <button
                 type="button"
+                className="btn btn-primary btn-auto"
                 onClick={() =>
                   void authedFetch(`/servers/${activeServer.id}/audio-settings`, {
                     method: 'PATCH',
@@ -4109,15 +4141,15 @@ export function App() {
                   {isServerOwner && member.userId !== auth.user.id && (
                     <>
                       {member.isMuted ? (
-                        <button type="button" onClick={() => unmuteMember(member.userId)}>
+                        <button type="button" className="btn btn-ghost btn-auto" onClick={() => unmuteMember(member.userId)}>
                           Unmute
                         </button>
                       ) : (
-                        <button type="button" onClick={() => muteMember(member.userId)}>
+                        <button type="button" className="btn btn-ghost btn-auto" onClick={() => muteMember(member.userId)}>
                           Mute
                         </button>
                       )}
-                      <label className="subtle type-meta text-secondary">
+                      <label className="control-toggle-row subtle type-meta text-secondary">
                         <input
                           type="checkbox"
                           checked={member.canShareScreen}
@@ -4141,7 +4173,7 @@ export function App() {
               Diagnostics & status internals <span className="panel-priority">advanced</span>
             </summary>
             <section className="notification-settings rail-stack">
-              <label>
+              <label className="control-toggle-row">
                 <input
                   type="checkbox"
                   checked={desktopNotificationsEnabled}
@@ -4151,7 +4183,7 @@ export function App() {
                 />
                 Enable desktop notifications
               </label>
-              <label>
+              <label className="control-toggle-row">
                 <input
                   type="checkbox"
                   checked={spatialAudioEnabled}

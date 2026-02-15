@@ -24,6 +24,7 @@
   --control-gap: var(--space-8);
   --section-rhythm: var(--space-16);
   --control-height: 36px;
+  --control-height-compact: 30px;
   font-family:
     Inter,
     system-ui,
@@ -34,6 +35,78 @@
   line-height: var(--leading-normal);
   color: var(--text-primary);
   background: #f3f4f6;
+}
+
+.btn {
+  border: 1px solid transparent;
+  border-radius: 0.4rem;
+  min-height: var(--control-height);
+  padding: 0 var(--space-16);
+  cursor: pointer;
+  font: inherit;
+}
+
+.btn-primary {
+  background: #2563eb;
+  color: var(--text-inverse);
+}
+
+.btn-secondary {
+  background: #4b5563;
+  color: var(--text-inverse);
+}
+
+.btn-ghost {
+  border-color: #d1d5db;
+  background: #f9fafb;
+  color: var(--text-primary);
+}
+
+.btn-danger {
+  background: #dc2626;
+  color: var(--text-inverse);
+}
+
+.btn-success {
+  background: #0f766e;
+  color: var(--text-inverse);
+}
+
+.btn-auto {
+  width: auto;
+  flex: 0 0 auto;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.input {
+  border-radius: 0.4rem;
+  border: 1px solid #d1d5db;
+  padding: 0 var(--space-12);
+  min-height: var(--control-height);
+  font-size: 0.95rem;
+  font: inherit;
+}
+
+.input-default {
+  min-height: var(--control-height);
+}
+
+.input-compact {
+  min-height: var(--control-height-compact);
+  font-size: 0.85rem;
+}
+
+.input-invalid {
+  border-color: #f87171;
+  background: #fef2f2;
+}
+
+.control-full {
+  width: 100%;
 }
 
 body {
@@ -115,16 +188,6 @@ h1 {
   justify-content: space-between;
   align-items: flex-start;
   gap: var(--space-16);
-}
-
-.logout-button {
-  border: none;
-  border-radius: 0.4rem;
-  padding: 0 var(--space-16);
-  min-height: var(--control-height);
-  background: #111827;
-  color: white;
-  cursor: pointer;
 }
 
 .guild-shell {
@@ -235,6 +298,10 @@ h1 {
   margin-top: var(--space-8);
 }
 
+.inline-form .input {
+  flex: 1;
+}
+
 .chat-box {
   border: 1px solid #d1d5db;
   border-radius: 0.5rem;
@@ -331,47 +398,18 @@ h1 {
 .composer {
   margin-top: var(--space-12);
   display: flex;
-  gap: var(--space-8);
+  align-items: center;
+  gap: var(--control-gap);
 }
 
-.composer input,
-.auth-form input,
-.inline-form input {
+.composer .input {
   flex: 1;
-  border-radius: 0.4rem;
-  border: 1px solid #d1d5db;
-  padding: 0 var(--space-12);
-  min-height: var(--control-height);
-  font-size: 0.95rem;
-}
-
-.composer button,
-.auth-form button,
-.auth-toggle button,
-.inline-form button {
-  border: none;
-  border-radius: 0.4rem;
-  padding: 0 var(--space-16);
-  min-height: var(--control-height);
-  background: #2563eb;
-  color: white;
-  cursor: pointer;
 }
 
 .upload-button {
-  border: none;
-  border-radius: 0.4rem;
-  padding: 0 var(--space-12);
-  min-height: var(--control-height);
-  background: #4b5563;
-  color: white;
-  cursor: pointer;
-}
-
-.composer button:disabled,
-.inline-form button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .auth-toggle {
@@ -382,11 +420,12 @@ h1 {
 }
 
 .auth-toggle button {
-  background: #9ca3af;
+  width: 100%;
 }
 
 .auth-toggle button.active {
   background: #1d4ed8;
+  color: var(--text-inverse);
 }
 
 .auth-form {
@@ -454,11 +493,8 @@ h1 {
 
 .message-actions button,
 .member-row button {
-  border: 1px solid #d1d5db;
-  background: #f9fafb;
-  border-radius: 0.35rem;
-  padding: var(--space-4) var(--space-8);
-  cursor: pointer;
+  min-height: var(--control-height-compact);
+  padding: 0 var(--space-8);
 }
 
 .notification-settings {
@@ -519,20 +555,6 @@ h1 {
   margin-bottom: var(--space-12);
 }
 
-.search-pagination button {
-  border: 1px solid #d1d5db;
-  background: #f9fafb;
-  border-radius: 0.35rem;
-  padding: var(--space-4) var(--space-8);
-  min-height: var(--control-height);
-  cursor: pointer;
-}
-
-.search-pagination button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
 .voice-panel {
   border: 1px solid #d1d5db;
   border-radius: 0.5rem;
@@ -540,16 +562,6 @@ h1 {
   display: grid;
   gap: var(--section-rhythm);
   margin-bottom: var(--space-12);
-}
-
-.voice-panel button {
-  border: none;
-  border-radius: 0.4rem;
-  padding: 0 var(--space-12);
-  min-height: var(--control-height);
-  background: #0f766e;
-  color: var(--text-inverse);
-  cursor: pointer;
 }
 
 .voice-participants {
@@ -772,13 +784,30 @@ button,
 }
 
 .control-file {
-  min-width: 150px;
+  min-width: 180px;
+  max-width: 260px;
 }
 
 .control-toggle-row {
   display: inline-flex;
   align-items: center;
   gap: var(--space-8);
+}
+
+.control-toggle-row input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+.composer .upload-button,
+.composer button {
+  min-height: var(--control-height);
+}
+
+.upload-control {
+  min-width: 96px;
+  max-width: 140px;
 }
 
 .left-rail .sidebar,

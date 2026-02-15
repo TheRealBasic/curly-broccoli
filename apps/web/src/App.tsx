@@ -3132,35 +3132,12 @@ export function App() {
         </button>
       </header>
 
-      <section className="notification-settings">
-        <label>
-          <input
-            type="checkbox"
-            checked={desktopNotificationsEnabled}
-            onChange={(event) => {
-              void toggleDesktopNotifications(event.target.checked);
-            }}
-          />
-          Enable desktop notifications
-        </label>
-        <label>
-          <input
-            type="checkbox"
-            checked={spatialAudioEnabled}
-            disabled={!spatialAudioAvailable}
-            onChange={(event) => setSpatialAudioEnabled(event.target.checked)}
-          />
-          Enable spatial audio
-        </label>
-        <small className="subtle">Permission: {notificationPermission}</small>
-        {!spatialAudioAvailable && (
-          <small className="subtle">Spatial audio unavailable in this browser.</small>
-        )}
-      </section>
-
       <section className="guild-shell">
-        <aside className="sidebar">
-          <h3>Servers</h3>
+        <aside className="app-rail left-rail">
+          <section className="sidebar rail-panel always-visible" data-priority="always-visible">
+            <h3>
+              Servers <span className="panel-priority">always visible</span>
+            </h3>
           <div className="list">
             {servers.map((server) => (
               <button
@@ -3173,18 +3150,21 @@ export function App() {
               </button>
             ))}
           </div>
-          <form className="inline-form" onSubmit={createServer}>
+            <form className="inline-form" onSubmit={createServer}>
             <input
               value={serverNameInput}
               onChange={(event) => setServerNameInput(event.target.value)}
               placeholder="New server"
             />
             <button type="submit">Create</button>
-          </form>
-        </aside>
+            </form>
+          </section>
 
-        <aside className="sidebar">
-          <h3>Channels {totalChannelUnread > 0 ? `(${totalChannelUnread})` : ''}</h3>
+          <section className="sidebar rail-panel always-visible" data-priority="always-visible">
+            <h3>
+              Channels {totalChannelUnread > 0 ? `(${totalChannelUnread})` : ''}{' '}
+              <span className="panel-priority">always visible</span>
+            </h3>
           <div className="list">
             {channels.map((channel) => (
               <button
@@ -3200,7 +3180,7 @@ export function App() {
               </button>
             ))}
           </div>
-          <form className="inline-form" onSubmit={createChannel}>
+            <form className="inline-form" onSubmit={createChannel}>
             <input
               value={channelNameInput}
               onChange={(event) => setChannelNameInput(event.target.value)}
@@ -3209,8 +3189,8 @@ export function App() {
             <button type="submit" disabled={!activeServerId}>
               Add
             </button>
-          </form>
-          <form className="inline-form" onSubmit={addMember}>
+            </form>
+            <form className="inline-form" onSubmit={addMember}>
             <input
               value={inviteUsernameInput}
               onChange={(event) => setInviteUsernameInput(event.target.value)}
@@ -3219,11 +3199,14 @@ export function App() {
             <button type="submit" disabled={!activeServerId}>
               Invite
             </button>
-          </form>
-        </aside>
+            </form>
+          </section>
 
-        <aside className="sidebar">
-          <h3>Direct Messages {totalDmUnread > 0 ? `(${totalDmUnread})` : ''}</h3>
+          <section className="sidebar rail-panel collapsible-panel" data-priority="collapsible">
+            <h3>
+              Direct Messages {totalDmUnread > 0 ? `(${totalDmUnread})` : ''}{' '}
+              <span className="panel-priority">collapsible</span>
+            </h3>
           <div className="list">
             {dmThreads.map((thread) => (
               <button
@@ -3254,13 +3237,15 @@ export function App() {
             />
             <button type="submit">Start</button>
           </form>
-          <button type="button" className="list-item" onClick={() => setChatMode('channel')}>
-            Back to channels
-          </button>
+            <button type="button" className="list-item" onClick={() => setChatMode('channel')}>
+              Back to channels
+            </button>
+          </section>
         </aside>
 
-        <section className="chat-panel">
-          <section className="voice-panel">
+        <section className="chat-panel center-rail">
+          <aside className="app-rail right-rail">
+            <section className="voice-panel rail-panel always-visible" data-priority="always-visible">
             <div>
               <strong>Voice</strong>
               <p className="subtle">
@@ -3305,9 +3290,9 @@ export function App() {
                   </button>
                 )}
             </div>
-          </section>
+            </section>
 
-          <section className="voice-panel">
+            <section className="voice-panel rail-panel collapsible-panel" data-priority="collapsible">
             <div>
               <strong>Co-watch</strong>
               <p className="subtle">Synchronized media viewing in this channel.</p>
@@ -3458,7 +3443,7 @@ export function App() {
                 }}
               />
             )}
-          </section>
+            </section>
 
           <div className="share-consent-card">
             <p className="subtle">
@@ -3499,7 +3484,7 @@ export function App() {
             </div>
           )}
 
-          <section className="voice-panel highlight-panel">
+            <section className="voice-panel highlight-panel rail-panel collapsible-panel" data-priority="collapsible">
             <h3>Highlights</h3>
             <label>
               <input
@@ -3526,9 +3511,9 @@ export function App() {
             >
               {highlightRecorderState === 'saving' ? 'Saving clip…' : 'Save last 30 seconds'}
             </button>
-          </section>
+            </section>
 
-          <section className="voice-panel">
+            <section className="voice-panel rail-panel collapsible-panel" data-priority="collapsible">
             <h3>Playful audio</h3>
             <div className="voice-panel-actions">
               <label>
@@ -3570,9 +3555,9 @@ export function App() {
                 Play upload
               </button>
             </div>
-          </section>
+            </section>
 
-          <div className="voice-controls">
+            <div className="voice-controls rail-panel collapsible-panel" data-priority="collapsible">
             <label>
               Mic gain {inputGain}%
               <input
@@ -3587,8 +3572,8 @@ export function App() {
               Join success: {voiceDashboard.joinSuccessRate.toFixed(0)}% · Median setup:{' '}
               {voiceDashboard.medianSetupMs.toFixed(0)}ms
             </div>
-          </div>
-          <div className="voice-participants">
+            </div>
+            <div className="voice-participants rail-panel collapsible-panel" data-priority="collapsible">
             {voiceParticipants
               .filter((participant) => participant.userId !== auth.user.id)
               .map((participant) => (
@@ -3623,13 +3608,16 @@ export function App() {
             {voiceChannelId === activeChannelId && voiceParticipants.length <= 1 && (
               <span className="subtle">No other participants yet.</span>
             )}
-          </div>
-          <p className="subtle">
+            </div>
+            <p className="subtle">
             Disconnect causes:{' '}
             {Object.entries(voiceDashboard.disconnectCauses)
               .map(([cause, count]) => `${cause}: ${count}`)
               .join(', ') || 'none'}
-          </p>
+            </p>
+          </aside>
+
+          <section className="primary-task">
           <form
             className="inline-form search-bar"
             onSubmit={(event) => {
@@ -3943,7 +3931,7 @@ export function App() {
               Send
             </button>
           </form>
-          {chatMode === 'channel' && pendingAttachmentUploads.length > 0 && (
+            {chatMode === 'channel' && pendingAttachmentUploads.length > 0 && (
             <div className="attachment-grid pending-uploads">
               {pendingAttachmentUploads.map((item) => (
                 <figure key={item.localId}>
@@ -3957,11 +3945,15 @@ export function App() {
                 </figure>
               ))}
             </div>
-          )}
+            )}
+          </section>
         </section>
 
-        <aside className="sidebar">
-          <h3>AI Settings</h3>
+        <aside className="app-rail context-rail">
+          <section className="sidebar rail-panel collapsible-panel" data-priority="collapsible">
+            <h3>
+              AI Settings <span className="panel-priority">collapsible</span>
+            </h3>
           {activeServerAiDraft ? (
             <form className="ai-settings-panel" onSubmit={(event) => void saveActiveServerAiSettings(event)}>
               <div className="ai-status-badges">
@@ -4050,8 +4042,12 @@ export function App() {
           ) : (
             <p className="subtle">No AI settings loaded.</p>
           )}
+          </section>
 
-          <h3>Members</h3>
+          <section className="sidebar rail-panel always-visible" data-priority="always-visible">
+            <h3>
+              Members <span className="panel-priority">always visible</span>
+            </h3>
           {isServerOwner && activeServer && (
             <div className="voice-panel-actions">
               <button
@@ -4137,16 +4133,47 @@ export function App() {
             })}
             {members.length === 0 && <p className="empty">No members yet.</p>}
           </div>
-          <h3>Audit Log</h3>
-          <div className="list">
-            {auditLogs.map((log) => (
-              <div key={log.id} className="member-row">
-                <span>{log.action}</span>
-                <small className="subtle">{log.actorUsername}</small>
-              </div>
-            ))}
-            {auditLogs.length === 0 && <p className="empty">No moderation events.</p>}
-          </div>
+          </section>
+
+          <details className="sidebar rail-panel advanced-panel" data-priority="advanced" open={false}>
+            <summary>
+              Diagnostics & status internals <span className="panel-priority">advanced</span>
+            </summary>
+            <section className="notification-settings rail-stack">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={desktopNotificationsEnabled}
+                  onChange={(event) => {
+                    void toggleDesktopNotifications(event.target.checked);
+                  }}
+                />
+                Enable desktop notifications
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={spatialAudioEnabled}
+                  disabled={!spatialAudioAvailable}
+                  onChange={(event) => setSpatialAudioEnabled(event.target.checked)}
+                />
+                Enable spatial audio
+              </label>
+              <small className="subtle">Permission: {notificationPermission}</small>
+              {!spatialAudioAvailable && (
+                <small className="subtle">Spatial audio unavailable in this browser.</small>
+              )}
+            </section>
+            <div className="list">
+              {auditLogs.map((log) => (
+                <div key={log.id} className="member-row">
+                  <span>{log.action}</span>
+                  <small className="subtle">{log.actorUsername}</small>
+                </div>
+              ))}
+              {auditLogs.length === 0 && <p className="empty">No moderation events.</p>}
+            </div>
+          </details>
         </aside>
       </section>
 

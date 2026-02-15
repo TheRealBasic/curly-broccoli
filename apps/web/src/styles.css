@@ -112,6 +112,12 @@
 body {
   margin: 0;
   color: var(--text-primary);
+  height: 100%;
+}
+
+html,
+#root {
+  height: 100%;
 }
 
 .type-page-title {
@@ -162,9 +168,15 @@ body {
 }
 
 .chat-layout {
-  max-width: 1100px;
-  margin: var(--space-24) auto;
+  width: min(100%, 1680px);
+  margin: 0 auto;
   padding: 0 var(--space-16);
+  min-height: 100vh;
+  max-height: 100vh;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: var(--space-16);
+  overflow: hidden;
 }
 
 .auth-layout {
@@ -188,15 +200,17 @@ h1 {
   justify-content: space-between;
   align-items: flex-start;
   gap: var(--space-16);
+  padding-top: var(--space-16);
 }
 
 .guild-shell {
-  margin-top: var(--space-16);
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr) 320px 280px;
-  grid-template-areas: 'left center right context';
+  grid-template-columns: 280px minmax(0, 1fr) 320px;
+  grid-template-areas: 'left center right';
   gap: var(--space-12);
-  align-items: start;
+  align-items: stretch;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .left-rail {
@@ -213,12 +227,17 @@ h1 {
 
 .context-rail {
   grid-area: context;
+  display: none;
 }
 
 .app-rail {
   display: grid;
   gap: var(--section-rhythm);
   align-content: start;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: var(--space-4);
 }
 
 .rail-panel {
@@ -256,6 +275,14 @@ h1 {
   border-radius: 0.5rem;
   background: #fff;
   padding: var(--panel-body-padding);
+}
+
+.chat-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
 }
 
 .sidebar > .type-section-header,
@@ -306,9 +333,11 @@ h1 {
   border: 1px solid #d1d5db;
   border-radius: 0.5rem;
   background: #fff;
-  min-height: 300px;
-  max-height: 420px;
+  min-height: 0;
+  max-height: none;
+  height: 100%;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: var(--panel-body-padding);
 }
 
@@ -400,6 +429,92 @@ h1 {
   display: flex;
   align-items: center;
   gap: var(--control-gap);
+}
+
+.primary-task {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+}
+
+.aux-rail-tabs {
+  display: none;
+}
+
+.guild-shell.is-medium .aux-rail-tabs {
+  display: flex;
+  gap: var(--space-8);
+  margin-bottom: var(--space-8);
+}
+
+.guild-shell.is-medium .aux-rail-tabs .btn.active {
+  background: #1d4ed8;
+  color: var(--text-inverse);
+}
+
+.guild-shell.is-medium .right-rail,
+.guild-shell.is-medium .context-rail {
+  display: grid;
+  position: fixed;
+  top: var(--space-16);
+  right: var(--space-16);
+  bottom: var(--space-16);
+  width: min(420px, calc(100vw - 2 * var(--space-16)));
+  z-index: 20;
+  background: #f8fafc;
+  border: 1px solid #d1d5db;
+  border-radius: 0.75rem;
+  padding: var(--space-12);
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.18);
+  transform: translateX(calc(100% + var(--space-16)));
+  transition: transform 160ms ease;
+}
+
+.guild-shell.is-medium.show-right-drawer .right-rail,
+.guild-shell.is-medium.show-context-drawer .context-rail {
+  transform: translateX(0);
+}
+
+.guild-shell.is-mobile {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    'left'
+    'center'
+    'right'
+    'context';
+  overflow: auto;
+  padding-bottom: 84px;
+}
+
+.guild-shell.is-mobile .right-rail,
+.guild-shell.is-mobile .context-rail {
+  display: grid;
+}
+
+.guild-shell.is-mobile .chat-panel {
+  order: -1;
+}
+
+.guild-shell.is-mobile .primary-task {
+  grid-template-rows: auto minmax(280px, 1fr) auto auto;
+}
+
+.guild-shell.is-mobile .composer {
+  position: sticky;
+  bottom: 0;
+  z-index: 15;
+  background: #fff;
+  padding: var(--space-8);
+  border: 1px solid #d1d5db;
+  border-radius: 0.5rem;
+}
+
+.guild-layout .chat-header {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  background: #f3f4f6;
+  padding-bottom: var(--space-8);
 }
 
 .composer .input {
@@ -829,4 +944,30 @@ button,
 .right-rail .voice-panel,
 .context-rail .sidebar {
   padding-inline: var(--panel-body-padding);
+}
+
+@media (min-width: 1280px) {
+  .guild-shell {
+    grid-template-columns: 280px minmax(0, 1fr) 320px;
+    grid-template-areas: 'left center right';
+  }
+}
+
+@media (max-width: 1279px) {
+  .guild-shell {
+    grid-template-columns: 280px minmax(0, 1fr);
+    grid-template-areas: 'left center';
+  }
+}
+
+@media (max-width: 959px) {
+  .chat-layout {
+    max-height: none;
+    overflow: visible;
+    min-height: 100%;
+  }
+
+  .guild-layout .chat-header {
+    top: 0;
+  }
 }

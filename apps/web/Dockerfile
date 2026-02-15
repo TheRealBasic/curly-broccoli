@@ -8,10 +8,9 @@ RUN corepack enable
 COPY package.json pnpm-workspace.yaml ./
 COPY apps/web/package.json apps/web/package.json
 COPY packages/shared/package.json packages/shared/package.json
-RUN pnpm install --prod=false --frozen-lockfile=false
-
 COPY packages/shared packages/shared
 COPY apps/web apps/web
+RUN pnpm install --prod=false --frozen-lockfile=false
 ARG VITE_API_BASE_URL=http://localhost:4000
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
 RUN pnpm --filter @curly-broccoli/shared build && pnpm --filter @curly-broccoli/web build

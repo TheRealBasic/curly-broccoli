@@ -2110,7 +2110,7 @@ export async function getUnreadSummary(userId: string): Promise<UnreadSummary> {
       LEFT JOIN channel_read_markers marker
         ON marker.user_id = $1
        AND marker.channel_id = channel_messages.channel_id
-      WHERE COALESCE(channel_messages.user_id, '') <> $1
+      WHERE channel_messages.user_id IS DISTINCT FROM $1
         AND (
           marker.last_read_at IS NULL
           OR channel_messages.created_at > marker.last_read_at

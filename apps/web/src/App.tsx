@@ -82,6 +82,7 @@ type RollingClipChunk = {
 type HighlightRecorderState = 'disabled' | 'buffering' | 'saving';
 type RightRailAccordionSection = 'voice' | 'coWatch' | 'highlights' | 'playfulAudio' | 'advanced';
 type RightRailAccordionState = Record<RightRailAccordionSection, boolean>;
+type AuxRailTab = 'none' | 'right' | 'context';
 
 const AUTH_STORAGE_KEY = 'curly_broccoli_auth';
 const DESKTOP_NOTIFICATIONS_STORAGE_KEY = 'curly_broccoli_desktop_notifications_enabled';
@@ -456,6 +457,10 @@ export function App() {
   const [rightRailAccordionState, setRightRailAccordionState] = useState<RightRailAccordionState>(
     DEFAULT_RIGHT_RAIL_ACCORDION_STATE,
   );
+  const [viewportWidth, setViewportWidth] = useState(() =>
+    typeof window === 'undefined' ? 1440 : window.innerWidth,
+  );
+  const [activeAuxRailTab, setActiveAuxRailTab] = useState<AuxRailTab>('none');
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermissionState>(
     () =>
       typeof window !== 'undefined' && 'Notification' in window
@@ -532,6 +537,21 @@ export function App() {
   useEffect(() => {
     saveRightRailAccordionState(auth?.user.id ?? null, rightRailAccordionState);
   }, [auth?.user.id, rightRailAccordionState]);
+
+  useEffect(() => {
+    const handleResize = () => setViewportWidth(window.innerWidth);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  const isMediumViewport = viewportWidth >= 960 && viewportWidth < 1280;
+  const isMobileViewport = viewportWidth < 960;
+
+  useEffect(() => {
+    if (!isMediumViewport) {
+      setActiveAuxRailTab('none');
+    }
+  }, [isMediumViewport]);
 
   const voiceSectionSummary = voiceChannelId === activeChannelId ? 'connected' : 'disconnected';
   const coWatchSectionSummary = !coWatchState ? 'idle' : coWatchState.paused ? 'paused' : 'playing';
@@ -3263,7 +3283,15 @@ export function App() {
         </button>
       </header>
 
-      <section className="guild-shell">
+      <section
+        className={`guild-shell${isMediumViewport ? ' is-medium' : ''}${isMobileViewport ? ' is-mobile' : ''}${
+          activeAuxRailTab === 'right'
+            ? ' show-right-drawer'
+            : activeAuxRailTab === 'context'
+              ? ' show-context-drawer'
+              : ''
+        }`}
+      >
         <aside className="app-rail left-rail">
           <section className="sidebar rail-panel always-visible" data-priority="always-visible">
             <h3 className="type-section-header text-primary">
@@ -3383,6 +3411,34 @@ export function App() {
         </aside>
 
         <section className="chat-panel center-rail">
+          {isMediumViewport && (
+            <div className="aux-rail-tabs" role="tablist" aria-label="Auxiliary panels">
+              <button
+                type="button"
+                className={
+                  activeAuxRailTab === 'right'
+                    ? 'btn btn-secondary btn-auto active'
+                    : 'btn btn-ghost btn-auto'
+                }
+                onClick={() => setActiveAuxRailTab((prev) => (prev === 'right' ? 'none' : 'right'))}
+              >
+                Voice & media
+              </button>
+              <button
+                type="button"
+                className={
+                  activeAuxRailTab === 'context'
+                    ? 'btn btn-secondary btn-auto active'
+                    : 'btn btn-ghost btn-auto'
+                }
+                onClick={() =>
+                  setActiveAuxRailTab((prev) => (prev === 'context' ? 'none' : 'context'))
+                }
+              >
+                Context
+              </button>
+            </div>
+          )}
           <aside className="app-rail right-rail">
             <details
               className="voice-panel rail-panel always-visible accordion-panel"

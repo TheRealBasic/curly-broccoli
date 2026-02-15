@@ -252,6 +252,10 @@ curl http://localhost:4000/metrics
 
 If problems persist, attach relevant `docker compose logs` output and your `.env` (with secrets redacted) when reporting the issue.
 
+## UI conventions and chat QA
+
+For in-repo web UI conventions (tokens, variants, panel layout rules) and the chat-screen PR checklist, see [`docs/ui-conventions-and-chat-screen-qa.md`](./docs/ui-conventions-and-chat-screen-qa.md).
+
 ## Deployment
 
 For production-like Compose usage and release checklist, see [`DEPLOYMENT.md`](./DEPLOYMENT.md).

@@ -3297,7 +3297,7 @@ export function App() {
               <strong className="type-panel-header text-primary">Co-watch</strong>
               <p className="subtle type-body text-secondary">Synchronized media viewing in this channel.</p>
             </div>
-            <div className="inline-form">
+            <div className="inline-form co-watch-source-row">
               <input
                 value={coWatchUrlInput}
                 onChange={(event) => setCoWatchUrlInput(event.target.value)}
@@ -3313,6 +3313,7 @@ export function App() {
                 Load URL
               </button>
               <input
+                className="control-file"
                 type="file"
                 accept="video/*,audio/*"
                 onChange={(event) => {
@@ -3332,7 +3333,7 @@ export function App() {
                 disabled={!activeChannelId || !canControlCoWatch}
               />
             </div>
-            <div className="inline-form">
+            <div className="inline-form co-watch-transport-row">
               <button
                 type="button"
                 onClick={() => {
@@ -3391,7 +3392,7 @@ export function App() {
                 </button>
               )}
               {coWatchState && coWatchState.hostUserId === auth.user.id && (
-                <label>
+                <label className="control-toggle-row">
                   <input
                     type="checkbox"
                     checked={coWatchAllowOthersControl}

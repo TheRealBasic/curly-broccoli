@@ -118,6 +118,7 @@ const DEFAULT_RIGHT_RAIL_ACCORDION_STATE: RightRailAccordionState = {
 };
 
 type NotificationPermissionState = 'unsupported' | NotificationPermission;
+type UnifiedStatusTone = 'connected' | 'idle' | 'error';
 
 type MentionSegment = {
   text: string;
@@ -529,6 +530,15 @@ export function App() {
   const activeServerAiDraft = activeServerId
     ? (aiSettingsDraftByServer[activeServerId] ?? activeServerAiSettings)
     : null;
+  const connectionStatusTone: UnifiedStatusTone =
+    connectionState === 'open' ? 'connected' : connectionState === 'connecting' ? 'idle' : 'error';
+  const notificationStatusTone: UnifiedStatusTone =
+    notificationPermission === 'granted'
+      ? 'connected'
+      : notificationPermission === 'denied'
+        ? 'error'
+        : 'idle';
+  const shouldShowStatusNotice = Boolean(error || systemMessage || activeScreenShare);
 
   useEffect(() => {
     setRightRailAccordionState(loadRightRailAccordionState(auth?.user.id ?? null));
@@ -3271,17 +3281,63 @@ export function App() {
       <header className="chat-header">
         <div>
           <h1 className="type-page-title text-primary">{APP_NAME}</h1>
-          <p className="subtle type-body text-secondary">
-            Signed in as <strong>{auth.user.username}</strong>
-          </p>
-          <p className="subtle type-meta text-muted">
-            Status: <strong>{connectionState}</strong> · {systemMessage}
-          </p>
         </div>
         <button type="button" className="btn btn-secondary btn-auto" onClick={logout}>
           Logout
         </button>
       </header>
+
+      <section className="status-strip" aria-label="Application status">
+        <ul className="status-strip-badges" aria-label="Status indicators">
+          <li className="status-chip" data-state="idle" aria-label={`Signed in as ${auth.user.username}`}>
+            <span className="status-chip-label">Signed in</span>
+            <strong>{auth.user.username}</strong>
+          </li>
+          <li
+            className="status-chip"
+            data-state={connectionStatusTone}
+            aria-label={`Connection is ${connectionState}`}
+          >
+            <span className="status-chip-label">Connection</span>
+            <strong>{connectionState === 'open' ? 'connected' : connectionState}</strong>
+          </li>
+          <li
+            className="status-chip"
+            data-state={notificationStatusTone}
+            aria-label={`Notification permission is ${notificationPermission}`}
+          >
+            <span className="status-chip-label">Notifications</span>
+            <strong>{notificationPermission}</strong>
+          </li>
+        </ul>
+        {shouldShowStatusNotice && (
+          <div className="status-strip-notices" aria-live="polite">
+            {error && (
+              <p className="status-notice" data-state="error" role="alert">
+                {error}
+              </p>
+            )}
+            {!error && activeScreenShare?.presenter.userId === auth.user.id && (
+              <div className="status-notice status-notice-action" data-state="warning" role="status">
+                <span>You are sharing your screen.</span>
+                <button
+                  type="button"
+                  className="btn btn-danger btn-auto"
+                  onClick={stopScreenShare}
+                  aria-label="Stop screen sharing"
+                >
+                  Stop sharing
+                </button>
+              </div>
+            )}
+            {!error && !activeScreenShare && systemMessage && (
+              <p className="status-notice" data-state="idle" role="status">
+                {systemMessage}
+              </p>
+            )}
+          </div>
+        )}
+      </section>
 
       <section
         className={`guild-shell${isMediumViewport ? ' is-medium' : ''}${isMobileViewport ? ' is-mobile' : ''}${
@@ -3977,14 +4033,6 @@ export function App() {
               </p>
             </details>
 
-            {activeScreenShare?.presenter.userId === auth.user.id && (
-              <div className="share-banner">
-                <strong>You are sharing</strong>
-                <button type="button" className="btn btn-danger btn-auto" onClick={stopScreenShare}>
-                  Stop sharing
-                </button>
-              </div>
-            )}
           </aside>
 
           <section className="primary-task">
@@ -4644,9 +4692,6 @@ export function App() {
                 />
                 Enable spatial audio
               </label>
-              <small className="subtle type-meta text-muted">
-                Permission: {notificationPermission}
-              </small>
               {!spatialAudioAvailable && (
                 <small className="subtle type-meta text-muted">
                   Spatial audio unavailable in this browser.
@@ -4665,8 +4710,6 @@ export function App() {
           </details>
         </aside>
       </section>
-
-      {error && <p className="error">{error}</p>}
     </main>
   );
 }

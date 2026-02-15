@@ -2768,33 +2768,37 @@ export function App() {
     event.preventDefault();
 
     const endpoint = authMode === 'login' ? '/auth/login' : '/auth/register';
-    const res = await fetch(`${apiBase}${endpoint}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: usernameInput, password: passwordInput }),
-    });
+    try {
+      const res = await fetch(`${apiBase}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: usernameInput, password: passwordInput }),
+      });
 
-    const data = (await res.json()) as
-      | {
-          user: { id: string; username: string };
-          tokens: { accessToken: string; refreshToken: string };
-        }
-      | { error: string };
+      const data = (await res.json()) as
+        | {
+            user: { id: string; username: string };
+            tokens: { accessToken: string; refreshToken: string };
+          }
+        | { error: string };
 
-    if (!res.ok || 'error' in data) {
-      setError('error' in data ? data.error : 'Unable to authenticate.');
-      return;
+      if (!res.ok || 'error' in data) {
+        setError('error' in data ? data.error : 'Unable to authenticate.');
+        return;
+      }
+
+      updateAuth({
+        user: data.user,
+        accessToken: data.tokens.accessToken,
+        refreshToken: data.tokens.refreshToken,
+      });
+
+      setUsernameInput('');
+      setPasswordInput('');
+      setError(null);
+    } catch {
+      setError(`Unable to reach authentication server at ${apiBase}.`);
     }
-
-    updateAuth({
-      user: data.user,
-      accessToken: data.tokens.accessToken,
-      refreshToken: data.tokens.refreshToken,
-    });
-
-    setUsernameInput('');
-    setPasswordInput('');
-    setError(null);
   }
 
   async function createServer(event: FormEvent) {

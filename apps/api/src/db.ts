@@ -8,7 +8,7 @@ import type {
   ChatMessage,
   DmMessage,
   DmThreadSummary,
-  type AttachmentCategory,
+  AttachmentCategory,
   MessageAttachment,
   ServerMember,
   ServerSummary,

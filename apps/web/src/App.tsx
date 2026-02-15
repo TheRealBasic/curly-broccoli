@@ -151,6 +151,21 @@ type ServerAiSettings = {
   status: ServerAiStatus;
 };
 
+function isRtcSessionDescriptionInit(value: unknown): value is RTCSessionDescriptionInit {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const candidate = value as { type?: unknown; sdp?: unknown };
+  return (
+    (candidate.type === 'offer'
+      || candidate.type === 'answer'
+      || candidate.type === 'pranswer'
+      || candidate.type === 'rollback')
+    && (typeof candidate.sdp === 'string' || typeof candidate.sdp === 'undefined')
+  );
+}
+
 
 export function disposeRemoteAudioNodes(nodes: RemoteAudioNodes) {
   nodes.source.disconnect();
@@ -257,7 +272,7 @@ function attachmentIcon(category: AttachmentCategory) {
 }
 
 export function App() {
-  const apiBase = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:4000';
+  const apiBase = ((import.meta as { env?: { VITE_API_BASE_URL?: string } }).env?.VITE_API_BASE_URL) ?? 'http://localhost:4000';
   const socketRef = useRef<WebSocket | null>(null);
   const typingTimeoutRef = useRef<number | null>(null);
   const isTypingRef = useRef(false);
@@ -606,7 +621,7 @@ export function App() {
       const localAnalyser = localSpeakingAnalyserRef.current;
       const localData = localSpeakingDataRef.current;
       if (localAnalyser && localData && auth?.user.id) {
-        localAnalyser.getByteTimeDomainData(localData);
+        localAnalyser.getByteTimeDomainData(localData as Uint8Array<ArrayBuffer>);
         let sum = 0;
         for (let i = 0; i < localData.length; i += 1) {
           const centered = localData[i] - 128;
@@ -621,7 +636,7 @@ export function App() {
         if (!data) {
           continue;
         }
-        analyser.getByteTimeDomainData(data);
+        analyser.getByteTimeDomainData(data as Uint8Array<ArrayBuffer>);
         let sum = 0;
         for (let i = 0; i < data.length; i += 1) {
           const centered = data[i] - 128;
@@ -792,10 +807,15 @@ export function App() {
           continue;
         }
 
-        const currentRtt = candidatePair.currentRoundTripTime ?? 0;
-        const packetsSent = candidatePair.packetsSent ?? 0;
+        const candidatePairStats = candidatePair as RTCIceCandidatePair & {
+          currentRoundTripTime?: number;
+          packetsSent?: number;
+          packetsDiscardedOnSend?: number;
+        };
+        const currentRtt = candidatePairStats.currentRoundTripTime ?? 0;
+        const packetsSent = candidatePairStats.packetsSent ?? 0;
         const packetLoss =
-          packetsSent > 0 ? (candidatePair.packetsDiscardedOnSend ?? 0) / packetsSent : 0;
+          packetsSent > 0 ? (candidatePairStats.packetsDiscardedOnSend ?? 0) / packetsSent : 0;
         if (currentRtt > 0.25 || packetLoss > 0.03) {
           degraded = true;
           break;
@@ -1304,7 +1324,7 @@ export function App() {
 
       const nodes = remoteAudioNodesByUserIdRef.current.get(userId);
       if (!nodes || nodes.stream !== stream || nodes.spatial !== spatialAudioEnabled) {
-        const event = { streams: [stream] } as RTCTrackEvent;
+        const event = { streams: [stream] } as unknown as RTCTrackEvent;
         const pc = peerConnectionsRef.current.get(userId);
         if (pc?.ontrack) {
           pc.ontrack(event);
@@ -1932,7 +1952,7 @@ export function App() {
               return;
             }
 
-            if (description) {
+            if (isRtcSessionDescriptionInit(description)) {
               await peerConnection.setRemoteDescription(description);
               if (description.type === 'offer') {
                 const answer = await peerConnection.createAnswer();
@@ -1987,7 +2007,7 @@ export function App() {
               return;
             }
 
-            if (description) {
+            if (isRtcSessionDescriptionInit(description)) {
               await peerConnection.setRemoteDescription(description);
               if (description.type === 'offer') {
                 const answer = await peerConnection.createAnswer();
@@ -2381,6 +2401,11 @@ export function App() {
 
     if (voiceParticipants.length > SCREEN_P2P_PARTICIPANT_THRESHOLD) {
       setError('This room is over the P2P threshold. SFU rollout is planned for larger rooms.');
+      return;
+    }
+
+    if (!auth) {
+      setError('Sign in before sharing your screen.');
       return;
     }
 
@@ -3858,7 +3883,7 @@ export function App() {
 
                 if (!nextValue.trim()) {
                   sendTypingStop(activeChannelId);
-    lastSentChannelTextRef.current = text;
+                  lastSentChannelTextRef.current = nextValue;
                   return;
                 }
 

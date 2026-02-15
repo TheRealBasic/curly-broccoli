@@ -566,7 +566,7 @@ describe('App', () => {
     const remoteStream = new MockMediaStream() as unknown as MediaStream;
     act(() => {
       const pc = MockRTCPeerConnection.instances[0];
-      pc.ontrack?.({ streams: [remoteStream] } as RTCTrackEvent);
+      pc.ontrack?.({ streams: [remoteStream] } as unknown as RTCTrackEvent);
       socketInstance.emit('message', {
         type: 'voice:user-left',
         payload: { channelId: 'channel-1', userId: 'user-2' },

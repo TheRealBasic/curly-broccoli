@@ -80,10 +80,13 @@ type RollingClipChunk = {
 };
 
 type HighlightRecorderState = 'disabled' | 'buffering' | 'saving';
+type RightRailAccordionSection = 'voice' | 'coWatch' | 'highlights' | 'playfulAudio' | 'advanced';
+type RightRailAccordionState = Record<RightRailAccordionSection, boolean>;
 
 const AUTH_STORAGE_KEY = 'curly_broccoli_auth';
 const DESKTOP_NOTIFICATIONS_STORAGE_KEY = 'curly_broccoli_desktop_notifications_enabled';
 const SPATIAL_AUDIO_STORAGE_KEY = 'curly_broccoli_spatial_audio_enabled';
+const RIGHT_RAIL_ACCORDION_STORAGE_PREFIX = 'curly_broccoli_right_rail_sections';
 const TYPING_STOP_DELAY_MS = 1200;
 const HEARTBEAT_INTERVAL_MS = 10_000;
 const HEARTBEAT_TIMEOUT_MS = 20_000;
@@ -105,6 +108,13 @@ const SCREEN_PRESETS: Record<ScreenContentType, ScreenEncodingPreset> = {
 const HIGHLIGHT_BUFFER_MS = 30_000;
 const HIGHLIGHT_CHUNK_MS = 1_000;
 const AI_MODEL_OPTIONS = ['gpt-4.1-mini', 'gpt-4.1', 'gpt-4o-mini'] as const;
+const DEFAULT_RIGHT_RAIL_ACCORDION_STATE: RightRailAccordionState = {
+  voice: true,
+  coWatch: true,
+  highlights: false,
+  playfulAudio: false,
+  advanced: false,
+};
 
 type NotificationPermissionState = 'unsupported' | NotificationPermission;
 
@@ -158,14 +168,13 @@ function isRtcSessionDescriptionInit(value: unknown): value is RTCSessionDescrip
 
   const candidate = value as { type?: unknown; sdp?: unknown };
   return (
-    (candidate.type === 'offer'
-      || candidate.type === 'answer'
-      || candidate.type === 'pranswer'
-      || candidate.type === 'rollback')
-    && (typeof candidate.sdp === 'string' || typeof candidate.sdp === 'undefined')
+    (candidate.type === 'offer' ||
+      candidate.type === 'answer' ||
+      candidate.type === 'pranswer' ||
+      candidate.type === 'rollback') &&
+    (typeof candidate.sdp === 'string' || typeof candidate.sdp === 'undefined')
   );
 }
-
 
 export function disposeRemoteAudioNodes(nodes: RemoteAudioNodes) {
   nodes.source.disconnect();
@@ -211,6 +220,33 @@ function loadSpatialAudioEnabled() {
 
 function saveSpatialAudioEnabled(value: boolean) {
   localStorage.setItem(SPATIAL_AUDIO_STORAGE_KEY, String(value));
+}
+
+function loadRightRailAccordionState(userId: string | null): RightRailAccordionState {
+  const storageKey = `${RIGHT_RAIL_ACCORDION_STORAGE_PREFIX}:${userId ?? 'guest'}`;
+  const raw = localStorage.getItem(storageKey);
+  if (!raw) {
+    return DEFAULT_RIGHT_RAIL_ACCORDION_STATE;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<RightRailAccordionState>;
+    return {
+      voice: parsed.voice ?? DEFAULT_RIGHT_RAIL_ACCORDION_STATE.voice,
+      coWatch: parsed.coWatch ?? DEFAULT_RIGHT_RAIL_ACCORDION_STATE.coWatch,
+      highlights: parsed.highlights ?? DEFAULT_RIGHT_RAIL_ACCORDION_STATE.highlights,
+      playfulAudio: parsed.playfulAudio ?? DEFAULT_RIGHT_RAIL_ACCORDION_STATE.playfulAudio,
+      advanced: parsed.advanced ?? DEFAULT_RIGHT_RAIL_ACCORDION_STATE.advanced,
+    };
+  } catch {
+    localStorage.removeItem(storageKey);
+    return DEFAULT_RIGHT_RAIL_ACCORDION_STATE;
+  }
+}
+
+function saveRightRailAccordionState(userId: string | null, value: RightRailAccordionState) {
+  const storageKey = `${RIGHT_RAIL_ACCORDION_STORAGE_PREFIX}:${userId ?? 'guest'}`;
+  localStorage.setItem(storageKey, JSON.stringify(value));
 }
 
 export function getSpatialPositionFromIndex(index: number, total: number) {
@@ -272,7 +308,9 @@ function attachmentIcon(category: AttachmentCategory) {
 }
 
 export function App() {
-  const apiBase = ((import.meta as { env?: { VITE_API_BASE_URL?: string } }).env?.VITE_API_BASE_URL) ?? 'http://localhost:4000';
+  const apiBase =
+    (import.meta as { env?: { VITE_API_BASE_URL?: string } }).env?.VITE_API_BASE_URL ??
+    'http://localhost:4000';
   const socketRef = useRef<WebSocket | null>(null);
   const typingTimeoutRef = useRef<number | null>(null);
   const isTypingRef = useRef(false);
@@ -337,8 +375,12 @@ export function App() {
   const [systemMessage, setSystemMessage] = useState('Sign in to join chat.');
   const [error, setError] = useState<string | null>(null);
   const [auditLogs, setAuditLogs] = useState<ModerationAuditLog[]>([]);
-  const [aiSettingsByServer, setAiSettingsByServer] = useState<Record<string, ServerAiSettings>>({});
-  const [aiSettingsDraftByServer, setAiSettingsDraftByServer] = useState<Record<string, ServerAiSettings>>({});
+  const [aiSettingsByServer, setAiSettingsByServer] = useState<Record<string, ServerAiSettings>>(
+    {},
+  );
+  const [aiSettingsDraftByServer, setAiSettingsDraftByServer] = useState<
+    Record<string, ServerAiSettings>
+  >({});
 
   const [servers, setServers] = useState<ServerSummary[]>([]);
   const [channels, setChannels] = useState<ChannelSummary[]>([]);
@@ -353,8 +395,13 @@ export function App() {
   const [voiceChannelId, setVoiceChannelId] = useState<string | null>(null);
   const [inputGain, setInputGain] = useState(100);
   const [selectedVoiceEffect, setSelectedVoiceEffect] = useState<VoiceEffectMode>('none');
-  const [customSoundboardClip, setCustomSoundboardClip] = useState<{ name: string; data: AudioBuffer } | null>(null);
-  const [activeEffectByUserId, setActiveEffectByUserId] = useState<Record<string, VoiceEffectMode>>({});
+  const [customSoundboardClip, setCustomSoundboardClip] = useState<{
+    name: string;
+    data: AudioBuffer;
+  } | null>(null);
+  const [activeEffectByUserId, setActiveEffectByUserId] = useState<Record<string, VoiceEffectMode>>(
+    {},
+  );
   const [outputVolumeByUserId, setOutputVolumeByUserId] = useState<Record<string, number>>({});
   const [peerStateByUserId, setPeerStateByUserId] = useState<Record<string, PeerConnectionHealth>>(
     {},
@@ -378,11 +425,15 @@ export function App() {
   const [screenNetworkQuality, setScreenNetworkQuality] = useState<'stable' | 'degraded'>('stable');
   const [coWatchState, setCoWatchState] = useState<CoWatchPlaybackState | null>(null);
   const [coWatchUrlInput, setCoWatchUrlInput] = useState('');
-  const [coWatchLocalMedia, setCoWatchLocalMedia] = useState<{ fileName: string; objectUrl: string } | null>(null);
+  const [coWatchLocalMedia, setCoWatchLocalMedia] = useState<{
+    fileName: string;
+    objectUrl: string;
+  } | null>(null);
   const [coWatchAllowOthersControl, setCoWatchAllowOthersControl] = useState(false);
   const [highlightCaptureEnabled, setHighlightCaptureEnabled] = useState(false);
   const [highlightUploadOnSave, setHighlightUploadOnSave] = useState(false);
-  const [highlightRecorderState, setHighlightRecorderState] = useState<HighlightRecorderState>('disabled');
+  const [highlightRecorderState, setHighlightRecorderState] =
+    useState<HighlightRecorderState>('disabled');
   const [activeServerId, setActiveServerId] = useState<string | null>(null);
   const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
   const [serverNameInput, setServerNameInput] = useState('');
@@ -393,13 +444,18 @@ export function App() {
   const [dmMessages, setDmMessages] = useState<DmMessage[]>([]);
   const [dmUsernameInput, setDmUsernameInput] = useState('');
   const [chatMode, setChatMode] = useState<'channel' | 'dm'>('channel');
-  const [pendingAttachmentUploads, setPendingAttachmentUploads] = useState<PendingAttachmentUpload[]>([]);
+  const [pendingAttachmentUploads, setPendingAttachmentUploads] = useState<
+    PendingAttachmentUpload[]
+  >([]);
   const [channelUnreadCounts, setChannelUnreadCounts] = useState<Record<string, number>>({});
   const [dmUnreadCounts, setDmUnreadCounts] = useState<Record<string, number>>({});
   const [desktopNotificationsEnabled, setDesktopNotificationsEnabled] = useState(() =>
     loadDesktopNotificationsEnabled(),
   );
   const [spatialAudioEnabled, setSpatialAudioEnabled] = useState(() => loadSpatialAudioEnabled());
+  const [rightRailAccordionState, setRightRailAccordionState] = useState<RightRailAccordionState>(
+    DEFAULT_RIGHT_RAIL_ACCORDION_STATE,
+  );
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermissionState>(
     () =>
       typeof window !== 'undefined' && 'Notification' in window
@@ -443,15 +499,18 @@ export function App() {
   const displayedMessages = showingSearchResults ? searchResults : visibleMessages;
   const shouldShowStreamingAiReply = Boolean(
     !showingSearchResults &&
-      chatMode === 'channel' &&
-      activeChannelId &&
-      streamingAiReply &&
-      streamingAiReply.channelId === activeChannelId,
+    chatMode === 'channel' &&
+    activeChannelId &&
+    streamingAiReply &&
+    streamingAiReply.channelId === activeChannelId,
   );
   const currentMember = members.find((member) => member.userId === auth?.user.id) ?? null;
   const isServerOwner = currentMember?.role === 'owner';
   const canControlCoWatch = Boolean(
-    auth && (!coWatchState || coWatchState.hostUserId === auth.user.id || coWatchState.controllers.includes(auth.user.id)),
+    auth &&
+    (!coWatchState ||
+      coWatchState.hostUserId === auth.user.id ||
+      coWatchState.controllers.includes(auth.user.id)),
   );
   const totalChannelUnread = Object.values(channelUnreadCounts).reduce(
     (sum, value) => sum + value,
@@ -459,10 +518,31 @@ export function App() {
   );
   const totalDmUnread = Object.values(dmUnreadCounts).reduce((sum, value) => sum + value, 0);
   const activeServer = servers.find((server) => server.id === activeServerId) ?? null;
-  const activeServerAiSettings = activeServerId ? aiSettingsByServer[activeServerId] ?? null : null;
-  const activeServerAiDraft = activeServerId
-    ? aiSettingsDraftByServer[activeServerId] ?? activeServerAiSettings
+  const activeServerAiSettings = activeServerId
+    ? (aiSettingsByServer[activeServerId] ?? null)
     : null;
+  const activeServerAiDraft = activeServerId
+    ? (aiSettingsDraftByServer[activeServerId] ?? activeServerAiSettings)
+    : null;
+
+  useEffect(() => {
+    setRightRailAccordionState(loadRightRailAccordionState(auth?.user.id ?? null));
+  }, [auth?.user.id]);
+
+  useEffect(() => {
+    saveRightRailAccordionState(auth?.user.id ?? null, rightRailAccordionState);
+  }, [auth?.user.id, rightRailAccordionState]);
+
+  const voiceSectionSummary = voiceChannelId === activeChannelId ? 'connected' : 'disconnected';
+  const coWatchSectionSummary = !coWatchState ? 'idle' : coWatchState.paused ? 'paused' : 'playing';
+  const highlightsSectionSummary = highlightCaptureEnabled
+    ? highlightRecorderState === 'buffering'
+      ? 'recording'
+      : highlightRecorderState
+    : 'off';
+  const playfulAudioSummary = activeServer?.soundboardEnabled
+    ? `effect ${selectedVoiceEffect}`
+    : 'disabled';
 
   useEffect(() => {
     activeChannelRef.current = activeChannelId;
@@ -975,11 +1055,16 @@ export function App() {
     localAudioContextRef.current = null;
   }
 
-
-  function connectVoiceEffectChain(context: AudioContext, source: AudioNode, effect: VoiceEffectMode) {
+  function connectVoiceEffectChain(
+    context: AudioContext,
+    source: AudioNode,
+    effect: VoiceEffectMode,
+  ) {
     if (effect === 'robot') {
       const shaper = context.createWaveShaper();
-      shaper.curve = new Float32Array(Array.from({ length: 256 }, (_, i) => Math.tanh(((i - 128) / 96) * 2)));
+      shaper.curve = new Float32Array(
+        Array.from({ length: 256 }, (_, i) => Math.tanh(((i - 128) / 96) * 2)),
+      );
       source.connect(shaper);
       return shaper as AudioNode;
     }
@@ -1006,7 +1091,12 @@ export function App() {
   function triggerSoundboardSignal(clipId: string) {
     const socket = socketRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN || !activeChannelId) return;
-    socket.send(JSON.stringify({ type: 'soundboard:trigger', payload: { channelId: activeChannelId, clipId } }));
+    socket.send(
+      JSON.stringify({
+        type: 'soundboard:trigger',
+        payload: { channelId: activeChannelId, clipId },
+      }),
+    );
   }
 
   function playBuiltInClip(clipId: string) {
@@ -1555,9 +1645,11 @@ export function App() {
       return;
     }
 
-    void Promise.all([loadServers(), loadDmThreads(), loadUnreadSummary()]).catch((reason: unknown) => {
-      setError(reason instanceof Error ? reason.message : 'Unable to load servers.');
-    });
+    void Promise.all([loadServers(), loadDmThreads(), loadUnreadSummary()]).catch(
+      (reason: unknown) => {
+        setError(reason instanceof Error ? reason.message : 'Unable to load servers.');
+      },
+    );
   }, [auth]);
 
   useEffect(() => {
@@ -1646,7 +1738,10 @@ export function App() {
         }
 
         if (parsed.type === 'chat:bot-pending') {
-          if (parsed.payload.requestedByUserId === auth.user.id && lastSentChannelTextRef.current.trim()) {
+          if (
+            parsed.payload.requestedByUserId === auth.user.id &&
+            lastSentChannelTextRef.current.trim()
+          ) {
             setAiPromptByRequestId((prev) => ({
               ...prev,
               [parsed.payload.requestId]: lastSentChannelTextRef.current,
@@ -1847,7 +1942,14 @@ export function App() {
 
         if (parsed.type === 'voice:participants') {
           voiceMetricsRef.current.joinSuccesses += 1;
-          setActiveEffectByUserId(Object.fromEntries(parsed.payload.participants.map((participant) => [participant.userId, participant.activeVoiceEffect ?? 'none'])));
+          setActiveEffectByUserId(
+            Object.fromEntries(
+              parsed.payload.participants.map((participant) => [
+                participant.userId,
+                participant.activeVoiceEffect ?? 'none',
+              ]),
+            ),
+          );
           refreshVoiceDashboard();
           setVoiceParticipantsByChannel((prev) => ({
             ...prev,
@@ -1979,7 +2081,11 @@ export function App() {
           });
         }
 
-        if (parsed.type === 'watch:start' || parsed.type === 'watch:pause' || parsed.type === 'watch:seek') {
+        if (
+          parsed.type === 'watch:start' ||
+          parsed.type === 'watch:pause' ||
+          parsed.type === 'watch:seek'
+        ) {
           setCoWatchState(parsed.payload.state);
           syncVideoToState(parsed.payload.state);
         }
@@ -1992,7 +2098,10 @@ export function App() {
         }
 
         if (parsed.type === 'voice:effect-state') {
-          setActiveEffectByUserId((current) => ({ ...current, [parsed.payload.userId]: parsed.payload.effect }));
+          setActiveEffectByUserId((current) => ({
+            ...current,
+            [parsed.payload.userId]: parsed.payload.effect,
+          }));
         }
 
         if (parsed.type === 'soundboard:trigger') {
@@ -2149,7 +2258,9 @@ export function App() {
     const captureStream = new MediaStream();
     remoteScreenStream.getVideoTracks().forEach((track) => captureStream.addTrack(track.clone()));
     remoteScreenStream.getAudioTracks().forEach((track) => captureStream.addTrack(track.clone()));
-    processedLocalVoiceStreamRef.current?.getAudioTracks().forEach((track) => captureStream.addTrack(track.clone()));
+    processedLocalVoiceStreamRef.current
+      ?.getAudioTracks()
+      .forEach((track) => captureStream.addTrack(track.clone()));
 
     if (captureStream.getTracks().length === 0) {
       setHighlightRecorderState('disabled');
@@ -2164,9 +2275,10 @@ export function App() {
     recorder.ondataavailable = (event) => {
       if (event.data.size === 0) return;
       const now = Date.now();
-      highlightBufferRef.current = [...highlightBufferRef.current, { blob: event.data, capturedAt: now }].filter(
-        (entry) => now - entry.capturedAt <= HIGHLIGHT_BUFFER_MS,
-      );
+      highlightBufferRef.current = [
+        ...highlightBufferRef.current,
+        { blob: event.data, capturedAt: now },
+      ].filter((entry) => now - entry.capturedAt <= HIGHLIGHT_BUFFER_MS);
     };
     recorder.start(HIGHLIGHT_CHUNK_MS);
     highlightRecorderRef.current = recorder;
@@ -2377,7 +2489,10 @@ export function App() {
         JSON.stringify({ type: 'voice:join-channel', payload: { channelId: activeChannelId } }),
       );
       socket.send(
-        JSON.stringify({ type: 'voice:effect-state', payload: { channelId: activeChannelId, effect: selectedVoiceEffect } }),
+        JSON.stringify({
+          type: 'voice:effect-state',
+          payload: { channelId: activeChannelId, effect: selectedVoiceEffect },
+        }),
       );
       setVoiceChannelId(activeChannelId);
       setError(null);
@@ -2562,7 +2677,6 @@ export function App() {
     setError(null);
   }
 
-
   async function copyTextToClipboard(messageId: string, text: string) {
     if (!navigator.clipboard) {
       setError('Clipboard access is not available in this browser.');
@@ -2572,7 +2686,10 @@ export function App() {
     try {
       await navigator.clipboard.writeText(text);
       setCopiedAiMessageId(messageId);
-      window.setTimeout(() => setCopiedAiMessageId((prev) => (prev === messageId ? null : prev)), 1200);
+      window.setTimeout(
+        () => setCopiedAiMessageId((prev) => (prev === messageId ? null : prev)),
+        1200,
+      );
     } catch {
       setError('Unable to copy message text.');
     }
@@ -2614,8 +2731,9 @@ export function App() {
       return;
     }
 
-    const expectedPosition =
-      state.paused ? state.positionSec : state.positionSec + Math.max(0, (Date.now() - Date.parse(state.lastEventAt)) / 1000);
+    const expectedPosition = state.paused
+      ? state.positionSec
+      : state.positionSec + Math.max(0, (Date.now() - Date.parse(state.lastEventAt)) / 1000);
     const drift = Math.abs(video.currentTime - expectedPosition);
 
     if (drift > 0.75) {
@@ -2637,7 +2755,11 @@ export function App() {
     }
   }
 
-  function sendWatchStateEvent(type: 'watch:pause' | 'watch:seek', paused: boolean, positionSec: number) {
+  function sendWatchStateEvent(
+    type: 'watch:pause' | 'watch:seek',
+    paused: boolean,
+    positionSec: number,
+  ) {
     if (!activeChannelId) {
       return;
     }
@@ -2742,7 +2864,9 @@ export function App() {
       setPendingAttachmentUploads((prev) =>
         prev.map((item) => (item.localId === localId ? { ...item, status: 'failed' } : item)),
       );
-      setError(uploadKind === 'clip' ? 'Unable to upload highlight clip.' : 'Unable to upload attachment.');
+      setError(
+        uploadKind === 'clip' ? 'Unable to upload highlight clip.' : 'Unable to upload attachment.',
+      );
       return null;
     }
   }
@@ -3011,13 +3135,14 @@ export function App() {
     setError(null);
   }
 
-
   async function unmuteMember(userId: string) {
     if (!activeServerId) {
       return;
     }
 
-    const res = await authedFetch(`/servers/${activeServerId}/mutes/${userId}`, { method: 'DELETE' });
+    const res = await authedFetch(`/servers/${activeServerId}/mutes/${userId}`, {
+      method: 'DELETE',
+    });
 
     if (!res.ok) {
       setError('Unable to unmute member.');
@@ -3066,7 +3191,9 @@ export function App() {
     return (
       <main className="chat-layout auth-layout">
         <h1 className="type-page-title text-primary">{APP_NAME}</h1>
-        <p className="subtle type-body text-secondary">Create an account or sign in to enter chat.</p>
+        <p className="subtle type-body text-secondary">
+          Create an account or sign in to enter chat.
+        </p>
 
         <div className="auth-toggle" role="tablist" aria-label="Authentication mode">
           <button
@@ -3109,7 +3236,9 @@ export function App() {
               required
             />
           </label>
-          <button type="submit" className="btn btn-primary control-full">{authMode === 'login' ? 'Sign in' : 'Create account'}</button>
+          <button type="submit" className="btn btn-primary control-full">
+            {authMode === 'login' ? 'Sign in' : 'Create account'}
+          </button>
         </form>
 
         {error && <p className="error">{error}</p>}
@@ -3140,26 +3269,28 @@ export function App() {
             <h3 className="type-section-header text-primary">
               Servers <span className="panel-priority">always visible</span>
             </h3>
-          <div className="list">
-            {servers.map((server) => (
-              <button
-                key={server.id}
-                type="button"
-                className={server.id === activeServerId ? 'list-item active' : 'list-item'}
-                onClick={() => setActiveServerId(server.id)}
-              >
-                {server.name}
-              </button>
-            ))}
-          </div>
+            <div className="list">
+              {servers.map((server) => (
+                <button
+                  key={server.id}
+                  type="button"
+                  className={server.id === activeServerId ? 'list-item active' : 'list-item'}
+                  onClick={() => setActiveServerId(server.id)}
+                >
+                  {server.name}
+                </button>
+              ))}
+            </div>
             <form className="inline-form" onSubmit={createServer}>
-            <input
-              className="input input-default control-full"
-              value={serverNameInput}
-              onChange={(event) => setServerNameInput(event.target.value)}
-              placeholder="New server"
-            />
-            <button type="submit" className="btn btn-primary btn-auto">Create</button>
+              <input
+                className="input input-default control-full"
+                value={serverNameInput}
+                onChange={(event) => setServerNameInput(event.target.value)}
+                placeholder="New server"
+              />
+              <button type="submit" className="btn btn-primary btn-auto">
+                Create
+              </button>
             </form>
           </section>
 
@@ -3168,42 +3299,42 @@ export function App() {
               Channels {totalChannelUnread > 0 ? `(${totalChannelUnread})` : ''}{' '}
               <span className="panel-priority">always visible</span>
             </h3>
-          <div className="list">
-            {channels.map((channel) => (
-              <button
-                key={channel.id}
-                type="button"
-                className={channel.id === activeChannelId ? 'list-item active' : 'list-item'}
-                onClick={() => setActiveChannelId(channel.id)}
-              >
-                #{channel.name}
-                {(channelUnreadCounts[channel.id] ?? 0) > 0 && (
-                  <span className="unread-badge">{channelUnreadCounts[channel.id]}</span>
-                )}
-              </button>
-            ))}
-          </div>
+            <div className="list">
+              {channels.map((channel) => (
+                <button
+                  key={channel.id}
+                  type="button"
+                  className={channel.id === activeChannelId ? 'list-item active' : 'list-item'}
+                  onClick={() => setActiveChannelId(channel.id)}
+                >
+                  #{channel.name}
+                  {(channelUnreadCounts[channel.id] ?? 0) > 0 && (
+                    <span className="unread-badge">{channelUnreadCounts[channel.id]}</span>
+                  )}
+                </button>
+              ))}
+            </div>
             <form className="inline-form" onSubmit={createChannel}>
-            <input
-              className="input input-default control-full"
-              value={channelNameInput}
-              onChange={(event) => setChannelNameInput(event.target.value)}
-              placeholder="New channel"
-            />
-            <button type="submit" className="btn btn-primary btn-auto" disabled={!activeServerId}>
-              Add
-            </button>
+              <input
+                className="input input-default control-full"
+                value={channelNameInput}
+                onChange={(event) => setChannelNameInput(event.target.value)}
+                placeholder="New channel"
+              />
+              <button type="submit" className="btn btn-primary btn-auto" disabled={!activeServerId}>
+                Add
+              </button>
             </form>
             <form className="inline-form" onSubmit={addMember}>
-            <input
-              className="input input-default control-full"
-              value={inviteUsernameInput}
-              onChange={(event) => setInviteUsernameInput(event.target.value)}
-              placeholder="Invite username"
-            />
-            <button type="submit" className="btn btn-primary btn-auto" disabled={!activeServerId}>
-              Invite
-            </button>
+              <input
+                className="input input-default control-full"
+                value={inviteUsernameInput}
+                onChange={(event) => setInviteUsernameInput(event.target.value)}
+                placeholder="Invite username"
+              />
+              <button type="submit" className="btn btn-primary btn-auto" disabled={!activeServerId}>
+                Invite
+              </button>
             </form>
           </section>
 
@@ -3212,37 +3343,39 @@ export function App() {
               Direct Messages {totalDmUnread > 0 ? `(${totalDmUnread})` : ''}{' '}
               <span className="panel-priority">collapsible</span>
             </h3>
-          <div className="list">
-            {dmThreads.map((thread) => (
-              <button
-                key={thread.id}
-                type="button"
-                className={
-                  thread.id === activeDmThreadId && chatMode === 'dm'
-                    ? 'list-item active'
-                    : 'list-item'
-                }
-                onClick={() => {
-                  setChatMode('dm');
-                  setActiveDmThreadId(thread.id);
-                }}
-              >
-                @{thread.otherUsername}
-                {(dmUnreadCounts[thread.id] ?? 0) > 0 && (
-                  <span className="unread-badge">{dmUnreadCounts[thread.id]}</span>
-                )}
+            <div className="list">
+              {dmThreads.map((thread) => (
+                <button
+                  key={thread.id}
+                  type="button"
+                  className={
+                    thread.id === activeDmThreadId && chatMode === 'dm'
+                      ? 'list-item active'
+                      : 'list-item'
+                  }
+                  onClick={() => {
+                    setChatMode('dm');
+                    setActiveDmThreadId(thread.id);
+                  }}
+                >
+                  @{thread.otherUsername}
+                  {(dmUnreadCounts[thread.id] ?? 0) > 0 && (
+                    <span className="unread-badge">{dmUnreadCounts[thread.id]}</span>
+                  )}
+                </button>
+              ))}
+            </div>
+            <form className="inline-form" onSubmit={startDm}>
+              <input
+                className="input input-default control-full"
+                value={dmUsernameInput}
+                onChange={(event) => setDmUsernameInput(event.target.value)}
+                placeholder="Start DM (username)"
+              />
+              <button type="submit" className="btn btn-primary btn-auto">
+                Start
               </button>
-            ))}
-          </div>
-          <form className="inline-form" onSubmit={startDm}>
-            <input
-              className="input input-default control-full"
-              value={dmUsernameInput}
-              onChange={(event) => setDmUsernameInput(event.target.value)}
-              placeholder="Start DM (username)"
-            />
-            <button type="submit" className="btn btn-primary btn-auto">Start</button>
-          </form>
+            </form>
             <button type="button" className="list-item" onClick={() => setChatMode('channel')}>
               Back to channels
             </button>
@@ -3251,726 +3384,927 @@ export function App() {
 
         <section className="chat-panel center-rail">
           <aside className="app-rail right-rail">
-            <section className="voice-panel rail-panel always-visible" data-priority="always-visible">
-            <div>
-              <strong className="type-panel-header text-primary">Voice</strong>
+            <details
+              className="voice-panel rail-panel always-visible accordion-panel"
+              data-priority="always-visible"
+              open={rightRailAccordionState.voice}
+              onToggle={(event) =>
+                setRightRailAccordionState((prev) => ({ ...prev, voice: event.currentTarget.open }))
+              }
+            >
+              <summary className="accordion-summary">
+                <strong className="type-panel-header text-primary">Voice</strong>
+                <span className="subtle type-meta text-muted">Voice: {voiceSectionSummary}</span>
+              </summary>
+              <div className="voice-panel-actions">
+                {voiceChannelId === activeChannelId ? (
+                  <button type="button" className="btn btn-success btn-auto" onClick={leaveVoice}>
+                    Leave voice
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn btn-success btn-auto"
+                    onClick={() => void joinVoice()}
+                    disabled={!activeChannelId}
+                  >
+                    Join voice
+                  </button>
+                )}
+                {activeScreenShare?.presenter.userId === auth.user.id ? (
+                  <button
+                    type="button"
+                    className="btn btn-danger btn-auto"
+                    onClick={stopScreenShare}
+                  >
+                    Stop sharing
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn btn-success btn-auto"
+                    onClick={() => void startScreenShare()}
+                    disabled={
+                      voiceChannelId !== activeChannelId ||
+                      !!activeScreenShare ||
+                      voiceParticipants.length > SCREEN_P2P_PARTICIPANT_THRESHOLD ||
+                      (currentMember ? !currentMember.canShareScreen : false)
+                    }
+                  >
+                    Share screen
+                  </button>
+                )}
+              </div>
               <p className="subtle type-body text-secondary">
                 {voiceChannelId === activeChannelId
                   ? `Connected in #${channels.find((channel) => channel.id === activeChannelId)?.name ?? 'channel'}`
                   : 'Join voice for the active channel'}
               </p>
-            </div>
-            <div className="voice-panel-actions">
-              {voiceChannelId === activeChannelId ? (
-                <button type="button" className="btn btn-success btn-auto" onClick={leaveVoice}>
-                  Leave voice
-                </button>
-              ) : (
-                <button type="button" className="btn btn-success btn-auto" onClick={() => void joinVoice()} disabled={!activeChannelId}>
-                  Join voice
-                </button>
-              )}
-              {activeScreenShare?.presenter.userId === auth.user.id ? (
-                <button type="button" className="btn btn-danger btn-auto" onClick={stopScreenShare}>
-                  Stop sharing
-                </button>
-              ) : (
+            </details>
+
+            <details
+              className="voice-panel rail-panel collapsible-panel accordion-panel"
+              data-priority="collapsible"
+              open={rightRailAccordionState.coWatch}
+              onToggle={(event) =>
+                setRightRailAccordionState((prev) => ({
+                  ...prev,
+                  coWatch: event.currentTarget.open,
+                }))
+              }
+            >
+              <summary className="accordion-summary">
+                <strong className="type-panel-header text-primary">Co-watch</strong>
+                <span className="subtle type-meta text-muted">
+                  Co-watch: {coWatchSectionSummary}
+                </span>
+              </summary>
+              <p className="subtle type-body text-secondary">
+                Synchronized media viewing in this channel.
+              </p>
+              <div className="inline-form co-watch-transport-row">
                 <button
                   type="button"
-                  className="btn btn-success btn-auto"
-                  onClick={() => void startScreenShare()}
-                  disabled={
-                    voiceChannelId !== activeChannelId ||
-                    !!activeScreenShare ||
-                    voiceParticipants.length > SCREEN_P2P_PARTICIPANT_THRESHOLD ||
-                    (currentMember ? !currentMember.canShareScreen : false)
-                  }
-                >
-                  Start screen share
-                </button>
-              )}
-              {isServerOwner &&
-                activeScreenShare &&
-                activeScreenShare.presenter.userId !== auth.user.id && (
-                  <button type="button" className="btn btn-danger btn-auto" onClick={forceStopScreenShare}>
-                    Force stop share
-                  </button>
-                )}
-            </div>
-            </section>
-
-            <section className="voice-panel rail-panel collapsible-panel" data-priority="collapsible">
-            <div>
-              <strong className="type-panel-header text-primary">Co-watch</strong>
-              <p className="subtle type-body text-secondary">Synchronized media viewing in this channel.</p>
-            </div>
-            <div className="inline-form co-watch-source-row">
-              <input
-                className="input input-default control-full"
-                value={coWatchUrlInput}
-                onChange={(event) => setCoWatchUrlInput(event.target.value)}
-                placeholder="Paste media URL"
-              />
-              <button
-                type="button"
-                className="btn btn-primary btn-auto"
-                onClick={() =>
-                  startCoWatchFromMedia({ sourceType: 'url', url: coWatchUrlInput.trim(), title: coWatchUrlInput.trim() })
-                }
-                disabled={!coWatchUrlInput.trim() || !activeChannelId || !canControlCoWatch}
-              >
-                Load URL
-              </button>
-              <input
-                className="input input-compact control-file"
-                type="file"
-                accept="video/*,audio/*"
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  if (!file) {
-                    return;
-                  }
-
-                  if (coWatchLocalMedia?.objectUrl) {
-                    URL.revokeObjectURL(coWatchLocalMedia.objectUrl);
-                  }
-
-                  const objectUrl = URL.createObjectURL(file);
-                  setCoWatchLocalMedia({ fileName: file.name, objectUrl });
-                  startCoWatchFromMedia({ sourceType: 'upload', url: objectUrl, title: file.name });
-                }}
-                disabled={!activeChannelId || !canControlCoWatch}
-              />
-            </div>
-            <div className="inline-form co-watch-transport-row">
-              <button
-                type="button"
-                className="btn btn-primary btn-auto"
-                onClick={() => {
-                  const video = watchVideoRef.current;
-                  if (!video || !activeChannelId) {
-                    return;
-                  }
-                  sendWatchStateEvent('watch:pause', !video.paused, video.currentTime);
-                }}
-                disabled={!coWatchState || !canControlCoWatch}
-              >
-                {coWatchState?.paused ? 'Play' : 'Pause'}
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary btn-auto"
-                onClick={() => {
-                  const video = watchVideoRef.current;
-                  if (!video || !canControlCoWatch) {
-                    return;
-                  }
-                  sendWatchStateEvent('watch:seek', video.paused, Math.max(0, video.currentTime - 10));
-                }}
-                disabled={!coWatchState || !canControlCoWatch}
-              >
-                -10s
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary btn-auto"
-                onClick={() => {
-                  const video = watchVideoRef.current;
-                  if (!video || !canControlCoWatch) {
-                    return;
-                  }
-                  sendWatchStateEvent('watch:seek', video.paused, video.currentTime + 10);
-                }}
-                disabled={!coWatchState || !canControlCoWatch}
-              >
-                +10s
-              </button>
-              {coWatchState && coWatchState.hostUserId === auth.user.id && voiceParticipants.find((participant) => participant.userId !== auth.user.id) && (
-                <button
-                  type="button"
-                  className="btn btn-ghost btn-auto"
+                  className="btn btn-primary btn-auto"
                   onClick={() => {
-                    const target = voiceParticipants.find((participant) => participant.userId !== auth.user.id);
-                    if (!target || !activeChannelId) {
+                    const video = watchVideoRef.current;
+                    if (!video || !activeChannelId) {
                       return;
                     }
-
-                    coWatchSend({
-                      type: 'watch:transfer-host',
-                      payload: { channelId: activeChannelId, targetUserId: target.userId },
-                    });
+                    sendWatchStateEvent('watch:pause', !video.paused, video.currentTime);
                   }}
+                  disabled={!coWatchState || !canControlCoWatch}
                 >
-                  Transfer host
+                  {coWatchState?.paused ? 'Play' : 'Pause'}
                 </button>
-              )}
-              {coWatchState && coWatchState.hostUserId === auth.user.id && (
-                <label className="control-toggle-row">
-                  <input
-                    type="checkbox"
-                    checked={coWatchAllowOthersControl}
-                    onChange={(event) => {
-                      const checked = event.target.checked;
-                      setCoWatchAllowOthersControl(checked);
-                      const controllers = checked
-                        ? voiceParticipants.map((participant) => participant.userId).filter((userId) => userId !== auth.user.id)
-                        : [];
-                      coWatchSend({ type: 'watch:set-permissions', payload: { channelId: activeChannelId, controllers } });
-                    }}
-                  />
-                  Allow others to control
-                </label>
-              )}
-            </div>
-            {coWatchLocalMedia && <p className="subtle type-meta text-muted">Loaded local media: {coWatchLocalMedia.fileName}</p>}
-            {coWatchState && (
-              <video
-                ref={watchVideoRef}
-                controls
-                playsInline
-                onPause={() => {
-                  if (!canControlCoWatch || coWatchSuppressSyncRef.current) {
-                    return;
-                  }
-                  const video = watchVideoRef.current;
-                  if (video) {
-                    sendWatchStateEvent('watch:pause', true, video.currentTime);
-                  }
-                }}
-                onPlay={() => {
-                  if (!canControlCoWatch || coWatchSuppressSyncRef.current) {
-                    return;
-                  }
-                  const video = watchVideoRef.current;
-                  if (video) {
-                    sendWatchStateEvent('watch:pause', false, video.currentTime);
-                  }
-                }}
-                onSeeked={() => {
-                  if (!canControlCoWatch || coWatchSuppressSyncRef.current) {
-                    return;
-                  }
-                  const video = watchVideoRef.current;
-                  if (video) {
-                    sendWatchStateEvent('watch:seek', video.paused, video.currentTime);
-                  }
-                }}
-              />
-            )}
-            </section>
-
-          <div className="share-consent-card">
-            <p className="subtle type-meta text-muted diagnostic-copy">
-              Browser consent: <strong>{screenConsentState}</strong> · In-app consent:{' '}
-              <strong>{activeScreenShare ? 'active' : 'not sharing'}</strong>
-            </p>
-            <label className="screen-preset-control">
-              Screen preset
-              <select
-                className="input input-default control-full"
-                value={screenContentType}
-                onChange={(event) => setScreenContentType(event.target.value as ScreenContentType)}
-              >
-                <option value="text">Text/code (8fps · 0.6Mbps)</option>
-                <option value="mixed">Mixed content (15fps · 1.2Mbps)</option>
-                <option value="motion">Motion/video (30fps · 2.5Mbps)</option>
-              </select>
-            </label>
-            <p className="subtle diagnostic-copy">
-              Network adaptation: <strong>{screenNetworkQuality}</strong> (packet loss + RTT aware)
-            </p>
-            <p className="subtle diagnostic-copy">
-              Topology: P2P up to {SCREEN_P2P_PARTICIPANT_THRESHOLD} participants. Planned SFU
-              migration above this threshold.
-            </p>
-            {screenShareScopeWarning && <p className="subtle diagnostic-copy">{screenShareScopeWarning}</p>}
-            {(currentMember ? !currentMember.canShareScreen : false) && (
-              <p className="subtle diagnostic-copy">
-                Role gate active: you do not have the "Can share screen" permission.
-              </p>
-            )}
-          </div>
-          {activeScreenShare?.presenter.userId === auth.user.id && (
-            <div className="share-banner">
-              <strong>You are sharing</strong>
-              <button type="button" className="btn btn-danger btn-auto" onClick={stopScreenShare}>
-                Stop sharing
-              </button>
-            </div>
-          )}
-
-            <section className="voice-panel highlight-panel rail-panel collapsible-panel" data-priority="collapsible">
-            <h3 className="type-section-header text-primary">Highlights</h3>
-            <label className="control-toggle-row">
-              <input
-                type="checkbox"
-                checked={highlightCaptureEnabled}
-                onChange={(event) => setHighlightCaptureEnabled(event.target.checked)}
-              />
-              I consent to local rolling capture of recent voice/screen moments.
-            </label>
-            <p className="subtle type-meta text-muted diagnostic-copy">Status: {highlightRecorderState === 'buffering' ? 'recording (rolling 30s)' : highlightRecorderState}</p>
-            <p className="subtle type-meta text-muted diagnostic-copy">Privacy: clips are temporary in memory and replaced after 30 seconds until you save.</p>
-            <label className="control-toggle-row">
-              <input
-                type="checkbox"
-                checked={highlightUploadOnSave}
-                onChange={(event) => setHighlightUploadOnSave(event.target.checked)}
-              />
-              Upload saved clip to this channel as an attachment.
-            </label>
-            <button
-              type="button"
-              className="btn btn-primary btn-auto"
-              onClick={() => void saveHighlightClip()}
-              disabled={!highlightCaptureEnabled || highlightRecorderState === 'saving' || !activeChannelId}
-            >
-              {highlightRecorderState === 'saving' ? 'Saving clip…' : 'Save last 30 seconds'}
-            </button>
-            </section>
-
-            <section className="voice-panel rail-panel collapsible-panel" data-priority="collapsible">
-            <h3 className="type-section-header text-primary">Playful audio</h3>
-            <div className="voice-panel-actions">
-              <label>
-                Voice effect
-                <select
-                  className="input input-default control-full"
-                  value={selectedVoiceEffect}
-                  disabled={!activeServer?.voiceEffectsEnabled}
-                  onChange={(event) => {
-                    const effect = event.target.value as VoiceEffectMode;
-                    setSelectedVoiceEffect(effect);
-                    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN && activeChannelId) {
-                      socketRef.current.send(JSON.stringify({ type: 'voice:effect-state', payload: { channelId: activeChannelId, effect } }));
-                    }
-                  }}
-                >
-                  <option value="none">None</option>
-                  <option value="robot">Robot</option>
-                  <option value="megaphone">Megaphone</option>
-                  <option value="pitch-shift">Pitch shift</option>
-                </select>
-              </label>
-              <div className="voice-panel-actions">
-                {SOUNDBOARD_CLIPS.map((clip) => (
-                  <button
-                    key={clip.id}
-                    type="button"
-                    className="btn btn-success btn-auto"
-                    disabled={!activeServer?.soundboardEnabled || voiceChannelId !== activeChannelId}
-                    onClick={() => playBuiltInClip(clip.id)}
-                  >
-                    {clip.label}
-                  </button>
-                ))}
               </div>
-              <label>
-                Custom clip
-                <input type="file" accept="audio/*" onChange={(event) => void handleCustomSoundUpload(event.target.files?.[0] ?? null)} />
-              </label>
-              <button type="button" className="btn btn-success btn-auto" onClick={playCustomClip} disabled={!customSoundboardClip || !activeServer?.soundboardEnabled}>
-                Play upload
-              </button>
-            </div>
-            </section>
-
-            <div className="voice-controls rail-panel collapsible-panel" data-priority="collapsible">
-            <label>
-              Mic gain {inputGain}%
-              <input
-                type="range"
-                min={0}
-                max={200}
-                value={inputGain}
-                onChange={(event) => setInputGain(Number(event.target.value))}
-              />
-            </label>
-            <div className="subtle type-meta text-muted diagnostic-copy">
-              Join success: {voiceDashboard.joinSuccessRate.toFixed(0)}% · Median setup:{' '}
-              {voiceDashboard.medianSetupMs.toFixed(0)}ms
-            </div>
-            </div>
-            <div className="voice-participants rail-panel collapsible-panel" data-priority="collapsible">
-            {voiceParticipants
-              .filter((participant) => participant.userId !== auth.user.id)
-              .map((participant) => (
-                <span key={participant.userId} className="voice-chip">
-                  {participant.username}
-                  {(activeEffectByUserId[participant.userId] ?? participant.activeVoiceEffect ?? 'none') !== 'none' && (
-                    <small className="subtle type-meta text-muted">fx:{activeEffectByUserId[participant.userId] ?? participant.activeVoiceEffect}</small>
-                  )}
-                  <strong className="voice-state">
-                    {peerStateByUserId[participant.userId] ?? 'connecting'}
-                  </strong>
-                  {speakingByUserId[participant.userId] && (
-                    <span className="speaking-dot" aria-label="speaking" />
-                  )}
-                  <label className="voice-volume">
-                    Vol
-                    <input
-                      type="range"
-                      min={0}
-                      max={150}
-                      value={outputVolumeByUserId[participant.userId] ?? 100}
-                      onChange={(event) =>
-                        setOutputVolumeByUserId((prev) => ({
-                          ...prev,
-                          [participant.userId]: Number(event.target.value),
-                        }))
-                      }
-                    />
-                  </label>
-                </span>
-              ))}
-            {voiceChannelId === activeChannelId && voiceParticipants.length <= 1 && (
-              <span className="subtle type-meta text-muted">No other participants yet.</span>
-            )}
-            </div>
-            <p className="subtle diagnostic-copy">
-            Disconnect causes:{' '}
-            {Object.entries(voiceDashboard.disconnectCauses)
-              .map(([cause, count]) => `${cause}: ${count}`)
-              .join(', ') || 'none'}
-            </p>
-          </aside>
-
-          <section className="primary-task">
-          <form
-            className="inline-form search-bar"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void runSearch(null, [null]);
-            }}
-          >
-            <input
-              className="input input-default control-full"
-              value={searchQuery}
-              onChange={(event) => setSearchQuery(event.target.value)}
-              placeholder={chatMode === 'dm' ? 'Search DMs' : 'Search channel messages'}
-              aria-label="Search messages"
-            />
-            <button type="submit" className="btn btn-primary btn-auto" disabled={isSearching}>
-              {isSearching ? 'Searching...' : 'Search'}
-            </button>
-            {showingSearchResults && (
-              <button
-                type="button"
-                className="btn btn-ghost btn-auto"
-                onClick={() => {
-                  setSearchQuery('');
-                  setSearchResults([]);
-                  setSearchNextCursor(null);
-                  setSearchCursorTrail([null]);
-                  setSearchError(null);
-                }}
-              >
-                Clear
-              </button>
-            )}
-          </form>
-          {showingSearchResults && (
-            <div className="search-pagination">
-              <button
-                type="button"
-                className="btn btn-ghost btn-auto"
-                onClick={() => {
-                  if (searchCursorTrail.length <= 1) {
-                    return;
-                  }
-                  const previousTrail = searchCursorTrail.slice(0, -1);
-                  const previousCursor = previousTrail[previousTrail.length - 1] ?? null;
-                  void runSearch(previousCursor, previousTrail);
-                }}
-                disabled={isSearching || searchCursorTrail.length <= 1}
-              >
-                Previous
-              </button>
-              <span className="subtle type-meta text-muted">Page {searchCursorTrail.length}</span>
-              <button
-                type="button"
-                className="btn btn-ghost btn-auto"
-                onClick={() => {
-                  if (!searchNextCursor) {
-                    return;
-                  }
-                  const nextTrail = [...searchCursorTrail, searchNextCursor];
-                  void runSearch(searchNextCursor, nextTrail);
-                }}
-                disabled={isSearching || !searchNextCursor}
-              >
-                Next
-              </button>
-            </div>
-          )}
-          {searchError && <p className="error">{searchError}</p>}
-
-          <section className="chat-box" aria-label="Messages">
-            {activeScreenShare && activeScreenShare.channelId === activeChannelId && (
-              <article className="screen-share-card">
-                <header>
-                  <strong>{activeScreenShare.presenter.username}</strong>
-                  <span className="subtle type-meta text-secondary">is sharing their screen</span>
-                </header>
-                <video
-                  ref={remoteScreenVideoRef}
-                  autoPlay
-                  muted={activeScreenShare.presenter.userId === auth.user.id}
-                  playsInline
-                />
-              </article>
-            )}
-            {chatMode === 'channel' && !activeChannelId && (
-              <p className="empty">Pick a channel to start chatting.</p>
-            )}
-            {chatMode === 'dm' && !activeDmThreadId && <p className="empty">Select a DM thread.</p>}
-            {((chatMode === 'channel' && activeChannelId) ||
-              (chatMode === 'dm' && activeDmThreadId)) &&
-              displayedMessages.length === 0 && (
-                <p className="empty">
-                  {showingSearchResults ? 'No matching messages.' : 'No messages yet.'}
+              {coWatchLocalMedia && (
+                <p className="subtle type-meta text-muted">
+                  Loaded local media: {coWatchLocalMedia.fileName}
                 </p>
               )}
-            {displayedMessages.map((message) => (
-              <article key={message.id} className="message">
-                <header>
-                  <strong>{'user' in message ? message.user : message.senderUsername}</strong>
-                  <time className="type-meta text-muted">{new Date(message.createdAt).toLocaleTimeString()}</time>
-                  {'editedAt' in message && message.editedAt && (
-                    <span className="subtle type-meta text-muted">(edited)</span>
-                  )}
-                </header>
-                {'user' in message && editingMessageId === message.id ? (
-                  <form
-                    className="inline-form"
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      void editMessage(message.id);
-                    }}
-                  >
-                    <input
-                      className="input input-default control-full"
-                      aria-label="Edit message"
-                      value={editDraft}
-                      maxLength={300}
-                      onChange={(event) => setEditDraft(event.target.value)}
-                    />
-                    <button type="submit" className="btn btn-primary btn-auto">Save</button>
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-auto"
-                      onClick={() => {
-                        setEditingMessageId(null);
-                        setEditDraft('');
-                      }}
-                    >
-                      Cancel
-                    </button>
-                  </form>
-                ) : (
-                  <p className="type-body text-primary">{renderMessageText(message.text, auth.user.username)}</p>
-                )}
-                {'attachments' in message && message.attachments.length > 0 && (
-                  <div className="attachment-grid">
-                    {message.attachments.map((attachment) => {
-                      const attachmentUrl = `${apiBase}${attachment.url}`;
-                      const isClip = attachment.mimeType === 'video/webm' || attachment.fileName.startsWith('highlight-');
-                      if (isClip) {
-                        return (
-                          <article key={attachment.id} className="attachment-card file clip-card">
-                            <strong>🎞️ Highlight clip</strong>
-                            <video controls preload="metadata" src={attachmentUrl} />
-                            <a href={attachmentUrl} target="_blank" rel="noreferrer" download={attachment.fileName}>
-                              Download {attachment.fileName}
-                            </a>
-                          </article>
+              {coWatchState && (
+                <video
+                  ref={watchVideoRef}
+                  controls
+                  playsInline
+                  onPause={() => {
+                    if (!canControlCoWatch || coWatchSuppressSyncRef.current) {
+                      return;
+                    }
+                    const video = watchVideoRef.current;
+                    if (video) {
+                      sendWatchStateEvent('watch:pause', true, video.currentTime);
+                    }
+                  }}
+                  onPlay={() => {
+                    if (!canControlCoWatch || coWatchSuppressSyncRef.current) {
+                      return;
+                    }
+                    const video = watchVideoRef.current;
+                    if (video) {
+                      sendWatchStateEvent('watch:pause', false, video.currentTime);
+                    }
+                  }}
+                  onSeeked={() => {
+                    if (!canControlCoWatch || coWatchSuppressSyncRef.current) {
+                      return;
+                    }
+                    const video = watchVideoRef.current;
+                    if (video) {
+                      sendWatchStateEvent('watch:seek', video.paused, video.currentTime);
+                    }
+                  }}
+                />
+              )}
+            </details>
+
+            <details
+              className="voice-panel highlight-panel rail-panel collapsible-panel accordion-panel"
+              data-priority="collapsible"
+              open={rightRailAccordionState.highlights}
+              onToggle={(event) =>
+                setRightRailAccordionState((prev) => ({
+                  ...prev,
+                  highlights: event.currentTarget.open,
+                }))
+              }
+            >
+              <summary className="accordion-summary">
+                <strong className="type-section-header text-primary">Highlights</strong>
+                <span className="subtle type-meta text-muted">
+                  Highlights: {highlightsSectionSummary}
+                </span>
+              </summary>
+              <label className="control-toggle-row">
+                <input
+                  type="checkbox"
+                  checked={highlightCaptureEnabled}
+                  onChange={(event) => setHighlightCaptureEnabled(event.target.checked)}
+                />
+                I consent to local rolling capture of recent voice/screen moments.
+              </label>
+              <p className="subtle type-meta text-muted diagnostic-copy">
+                Status:{' '}
+                {highlightRecorderState === 'buffering'
+                  ? 'recording (rolling 30s)'
+                  : highlightRecorderState}
+              </p>
+              <p className="subtle type-meta text-muted diagnostic-copy">
+                Privacy: clips are temporary in memory and replaced after 30 seconds until you save.
+              </p>
+              <label className="control-toggle-row">
+                <input
+                  type="checkbox"
+                  checked={highlightUploadOnSave}
+                  onChange={(event) => setHighlightUploadOnSave(event.target.checked)}
+                />
+                Upload saved clip to this channel as an attachment.
+              </label>
+              <button
+                type="button"
+                className="btn btn-primary btn-auto"
+                onClick={() => void saveHighlightClip()}
+                disabled={
+                  !highlightCaptureEnabled ||
+                  highlightRecorderState === 'saving' ||
+                  !activeChannelId
+                }
+              >
+                {highlightRecorderState === 'saving' ? 'Saving clip…' : 'Save last 30 seconds'}
+              </button>
+            </details>
+
+            <details
+              className="voice-panel rail-panel collapsible-panel accordion-panel"
+              data-priority="collapsible"
+              open={rightRailAccordionState.playfulAudio}
+              onToggle={(event) =>
+                setRightRailAccordionState((prev) => ({
+                  ...prev,
+                  playfulAudio: event.currentTarget.open,
+                }))
+              }
+            >
+              <summary className="accordion-summary">
+                <strong className="type-section-header text-primary">Playful audio</strong>
+                <span className="subtle type-meta text-muted">
+                  Playful audio: {playfulAudioSummary}
+                </span>
+              </summary>
+              <div className="voice-panel-actions">
+                <label>
+                  Voice effect
+                  <select
+                    className="input input-default control-full"
+                    value={selectedVoiceEffect}
+                    disabled={!activeServer?.voiceEffectsEnabled}
+                    onChange={(event) => {
+                      const effect = event.target.value as VoiceEffectMode;
+                      setSelectedVoiceEffect(effect);
+                      if (
+                        socketRef.current &&
+                        socketRef.current.readyState === WebSocket.OPEN &&
+                        activeChannelId
+                      ) {
+                        socketRef.current.send(
+                          JSON.stringify({
+                            type: 'voice:effect-state',
+                            payload: { channelId: activeChannelId, effect },
+                          }),
                         );
                       }
-
-                      return (
-                        <a
-                          key={attachment.id}
-                          className={attachment.category === 'image' ? 'attachment-card image' : 'attachment-card file'}
-                          href={attachmentUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          download={attachment.fileName}
-                        >
-                          {attachment.category === 'image' ? (
-                            <img src={attachmentUrl} alt={attachment.fileName} />
-                          ) : (
-                            <span className="file-attachment-label">
-                              {attachmentIcon(attachment.category)} {attachment.fileName}
-                            </span>
-                          )}
-                        </a>
-                      );
-                    })}
-                  </div>
-                )}
-                {'user' in message && chatMode === 'channel' && (
-                  <div className="message-actions">
-                    <button type="button" className="btn btn-ghost btn-auto" onClick={() => reportMessage(message.id)}>
-                      Report
+                    }}
+                  >
+                    <option value="none">None</option>
+                    <option value="robot">Robot</option>
+                    <option value="megaphone">Megaphone</option>
+                    <option value="pitch-shift">Pitch shift</option>
+                  </select>
+                </label>
+                <div className="voice-panel-actions">
+                  {SOUNDBOARD_CLIPS.map((clip) => (
+                    <button
+                      key={clip.id}
+                      type="button"
+                      className="btn btn-success btn-auto"
+                      disabled={
+                        !activeServer?.soundboardEnabled || voiceChannelId !== activeChannelId
+                      }
+                      onClick={() => playBuiltInClip(clip.id)}
+                    >
+                      {clip.label}
                     </button>
-                    {message.userId === auth.user.id && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingMessageId(message.id);
-                          setEditDraft(message.text);
-                        }}
-                      >
-                        Edit
-                      </button>
-                    )}
-                    {(message.userId === auth.user.id || isServerOwner) && (
-                      <button type="button" className="btn btn-danger btn-auto" onClick={() => deleteMessage(message.id)}>
-                        Delete
-                      </button>
-                    )}
-                    {message.userId === null && (
-                      <>
-                        <button type="button" className="btn btn-ghost btn-auto" onClick={() => void copyTextToClipboard(message.id, message.text)}>
-                          {copiedAiMessageId === message.id ? 'Copied' : 'Copy'}
-                        </button>
-                        {aiRequestIdByMessageId[message.id] && (
-                          <button type="button" className="btn btn-primary btn-auto" onClick={() => retryAiPrompt(aiRequestIdByMessageId[message.id])}>
-                            Retry
-                          </button>
-                        )}
-                      </>
-                    )}
-                  </div>
-                )}
-              </article>
-            ))}
+                  ))}
+                </div>
+              </div>
+            </details>
 
-            {shouldShowStreamingAiReply && streamingAiReply && (
-              <article className="message" aria-live="polite">
-                <header>
-                  <strong>{streamingAiReply.botDisplayName}</strong>
-                  <span className="subtle type-meta text-secondary">replying…</span>
-                </header>
-                <p className="type-body text-primary">{streamingAiReply.text || '…'}</p>
-              </article>
-            )}
-          </section>
-
-          {chatMode === 'channel' && (
-            <p className="typing-indicator" aria-live="polite">
-              {typingUsers.length === 1 && `${typingUsers[0].username} is typing...`}
-              {typingUsers.length > 1 &&
-                `${typingUsers
-                  .slice(0, 2)
-                  .map((user) => user.username)
-                  .join(
-                    ', ',
-                  )}${typingUsers.length > 2 ? ` +${typingUsers.length - 2} others` : ''} are typing...`}
-              {typingUsers.length === 0 && '\u00A0'}
-            </p>
-          )}
-
-          <form
-            className="composer"
-            onSubmit={(event) => {
-              event.preventDefault();
-              sendMessage();
-            }}
-          >
-            <input
-              className="input input-default"
-              value={draft}
-              onChange={(event) => {
-                const nextValue = event.target.value;
-                setDraft(nextValue);
-
-                if (chatMode !== 'channel') {
-                  return;
-                }
-
-                const socket = socketRef.current;
-                if (!socket || socket.readyState !== WebSocket.OPEN || !activeChannelId) {
-                  return;
-                }
-
-                if (!nextValue.trim()) {
-                  sendTypingStop(activeChannelId);
-                  lastSentChannelTextRef.current = nextValue;
-                  return;
-                }
-
-                if (!isTypingRef.current) {
-                  socket.send(
-                    JSON.stringify({
-                      type: 'typing:start',
-                      payload: { channelId: activeChannelId },
-                    }),
-                  );
-                  isTypingRef.current = true;
-                }
-
-                queueTypingStop();
-              }}
-              onBlur={() => sendTypingStop()}
-              placeholder={
-                chatMode === 'dm'
-                  ? activeDmThreadId
-                    ? 'Type a DM'
-                    : 'Select a DM thread'
-                  : activeChannelId
-                    ? 'Type a message'
-                    : 'Select a channel first'
+            <details
+              className="voice-panel rail-panel advanced-panel accordion-panel"
+              data-priority="advanced"
+              open={rightRailAccordionState.advanced}
+              onToggle={(event) =>
+                setRightRailAccordionState((prev) => ({
+                  ...prev,
+                  advanced: event.currentTarget.open,
+                }))
               }
-              aria-label="Message"
-              maxLength={300}
-            />
-            {chatMode === 'channel' && (
-              <label className="btn btn-secondary btn-auto upload-button upload-control">
-                Attach
+            >
+              <summary className="accordion-summary">
+                <strong className="type-section-header text-primary">Advanced</strong>
+                <span className="subtle type-meta text-muted">
+                  screen presets, internals, custom clip
+                </span>
+              </summary>
+              <div className="share-consent-card">
+                <p className="subtle type-meta text-muted diagnostic-copy">
+                  Browser consent: <strong>{screenConsentState}</strong> · In-app consent:{' '}
+                  <strong>{activeScreenShare ? 'active' : 'not sharing'}</strong>
+                </p>
+                <label className="screen-preset-control">
+                  Screen preset
+                  <select
+                    className="input input-default control-full"
+                    value={screenContentType}
+                    onChange={(event) =>
+                      setScreenContentType(event.target.value as ScreenContentType)
+                    }
+                  >
+                    <option value="text">Text/code (8fps · 0.6Mbps)</option>
+                    <option value="mixed">Mixed content (15fps · 1.2Mbps)</option>
+                    <option value="motion">Motion/video (30fps · 2.5Mbps)</option>
+                  </select>
+                </label>
+                <p className="subtle diagnostic-copy">
+                  Network adaptation: <strong>{screenNetworkQuality}</strong> (packet loss + RTT
+                  aware)
+                </p>
+                <p className="subtle diagnostic-copy">
+                  Topology: P2P up to {SCREEN_P2P_PARTICIPANT_THRESHOLD} participants. Planned SFU
+                  migration above this threshold.
+                </p>
+                {screenShareScopeWarning && (
+                  <p className="subtle diagnostic-copy">{screenShareScopeWarning}</p>
+                )}
+                {(currentMember ? !currentMember.canShareScreen : false) && (
+                  <p className="subtle diagnostic-copy">
+                    Role gate active: you do not have the "Can share screen" permission.
+                  </p>
+                )}
+              </div>
+              <div className="inline-form co-watch-source-row">
                 <input
+                  className="input input-default control-full"
+                  value={coWatchUrlInput}
+                  onChange={(event) => setCoWatchUrlInput(event.target.value)}
+                  placeholder="Paste media URL"
+                />
+                <button
+                  type="button"
+                  className="btn btn-primary btn-auto"
+                  onClick={() =>
+                    startCoWatchFromMedia({
+                      sourceType: 'url',
+                      url: coWatchUrlInput.trim(),
+                      title: coWatchUrlInput.trim(),
+                    })
+                  }
+                  disabled={!coWatchUrlInput.trim() || !activeChannelId || !canControlCoWatch}
+                >
+                  Load URL
+                </button>
+                <input
+                  className="input input-compact control-file"
                   type="file"
-                  accept="*/*"
+                  accept="video/*,audio/*"
                   onChange={(event) => {
                     const file = event.target.files?.[0];
-                    event.currentTarget.value = '';
                     if (!file) {
                       return;
                     }
 
-                    void uploadAttachment(file);
+                    if (coWatchLocalMedia?.objectUrl) {
+                      URL.revokeObjectURL(coWatchLocalMedia.objectUrl);
+                    }
+
+                    const objectUrl = URL.createObjectURL(file);
+                    setCoWatchLocalMedia({ fileName: file.name, objectUrl });
+                    startCoWatchFromMedia({
+                      sourceType: 'upload',
+                      url: objectUrl,
+                      title: file.name,
+                    });
                   }}
-                  hidden
+                  disabled={!activeChannelId || !canControlCoWatch}
                 />
-              </label>
-            )}
-            <button
-              type="submit"
-              className="btn btn-primary btn-auto"
-              disabled={
-                connectionState !== 'open' ||
-                (!draft.trim() &&
-                  pendingAttachmentUploads.filter((item) => item.status === 'uploaded').length === 0) ||
-                (chatMode === 'dm' ? !activeDmThreadId : !activeChannelId)
-              }
-            >
-              Send
-            </button>
-          </form>
-            {chatMode === 'channel' && pendingAttachmentUploads.length > 0 && (
-            <div className="attachment-grid pending-uploads">
-              {pendingAttachmentUploads.map((item) => (
-                <figure key={item.localId}>
-                  {item.previewUrl ? (
-                    <img src={item.previewUrl} alt={item.fileName} />
-                  ) : (
-                    <div className="pending-file-icon">{attachmentIcon(item.category)}</div>
+              </div>
+              <div className="inline-form co-watch-transport-row">
+                <button
+                  type="button"
+                  className="btn btn-primary btn-auto"
+                  onClick={() => {
+                    const video = watchVideoRef.current;
+                    if (!video || !canControlCoWatch) {
+                      return;
+                    }
+                    sendWatchStateEvent(
+                      'watch:seek',
+                      video.paused,
+                      Math.max(0, video.currentTime - 10),
+                    );
+                  }}
+                  disabled={!coWatchState || !canControlCoWatch}
+                >
+                  -10s
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary btn-auto"
+                  onClick={() => {
+                    const video = watchVideoRef.current;
+                    if (!video || !canControlCoWatch) {
+                      return;
+                    }
+                    sendWatchStateEvent('watch:seek', video.paused, video.currentTime + 10);
+                  }}
+                  disabled={!coWatchState || !canControlCoWatch}
+                >
+                  +10s
+                </button>
+                {coWatchState &&
+                  coWatchState.hostUserId === auth.user.id &&
+                  voiceParticipants.find((participant) => participant.userId !== auth.user.id) && (
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-auto"
+                      onClick={() => {
+                        const target = voiceParticipants.find(
+                          (participant) => participant.userId !== auth.user.id,
+                        );
+                        if (!target || !activeChannelId) {
+                          return;
+                        }
+
+                        coWatchSend({
+                          type: 'watch:transfer-host',
+                          payload: { channelId: activeChannelId, targetUserId: target.userId },
+                        });
+                      }}
+                    >
+                      Transfer host
+                    </button>
                   )}
-                  <figcaption>{item.fileName}</figcaption>
-                  <figcaption>{item.status === 'failed' ? 'failed' : `${item.progress}%`}</figcaption>
-                </figure>
+                {coWatchState && coWatchState.hostUserId === auth.user.id && (
+                  <label className="control-toggle-row">
+                    <input
+                      type="checkbox"
+                      checked={coWatchAllowOthersControl}
+                      onChange={(event) => {
+                        const checked = event.target.checked;
+                        setCoWatchAllowOthersControl(checked);
+                        const controllers = checked
+                          ? voiceParticipants
+                              .map((participant) => participant.userId)
+                              .filter((userId) => userId !== auth.user.id)
+                          : [];
+                        coWatchSend({
+                          type: 'watch:set-permissions',
+                          payload: { channelId: activeChannelId, controllers },
+                        });
+                      }}
+                    />
+                    Allow others to control
+                  </label>
+                )}
+              </div>
+              <div className="voice-panel-actions">
+                <label>
+                  Custom clip
+                  <input
+                    type="file"
+                    accept="audio/*"
+                    onChange={(event) =>
+                      void handleCustomSoundUpload(event.target.files?.[0] ?? null)
+                    }
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="btn btn-success btn-auto"
+                  onClick={playCustomClip}
+                  disabled={!customSoundboardClip || !activeServer?.soundboardEnabled}
+                >
+                  Play upload
+                </button>
+              </div>
+              {isServerOwner &&
+                activeScreenShare &&
+                activeScreenShare.presenter.userId !== auth.user.id && (
+                  <button
+                    type="button"
+                    className="btn btn-danger btn-auto"
+                    onClick={forceStopScreenShare}
+                  >
+                    Force stop share
+                  </button>
+                )}
+              <div
+                className="voice-controls rail-panel collapsible-panel"
+                data-priority="collapsible"
+              >
+                <label>
+                  Mic gain {inputGain}%
+                  <input
+                    type="range"
+                    min={0}
+                    max={200}
+                    value={inputGain}
+                    onChange={(event) => setInputGain(Number(event.target.value))}
+                  />
+                </label>
+                <div className="subtle type-meta text-muted diagnostic-copy">
+                  Join success: {voiceDashboard.joinSuccessRate.toFixed(0)}% · Median setup:{' '}
+                  {voiceDashboard.medianSetupMs.toFixed(0)}ms
+                </div>
+              </div>
+              <div
+                className="voice-participants rail-panel collapsible-panel"
+                data-priority="collapsible"
+              >
+                {voiceParticipants
+                  .filter((participant) => participant.userId !== auth.user.id)
+                  .map((participant) => (
+                    <span key={participant.userId} className="voice-chip">
+                      {participant.username}
+                      {(activeEffectByUserId[participant.userId] ??
+                        participant.activeVoiceEffect ??
+                        'none') !== 'none' && (
+                        <small className="subtle type-meta text-muted">
+                          fx:
+                          {activeEffectByUserId[participant.userId] ??
+                            participant.activeVoiceEffect}
+                        </small>
+                      )}
+                      <strong className="voice-state">
+                        {peerStateByUserId[participant.userId] ?? 'connecting'}
+                      </strong>
+                      {speakingByUserId[participant.userId] && (
+                        <span className="speaking-dot" aria-label="speaking" />
+                      )}
+                      <label className="voice-volume">
+                        Vol
+                        <input
+                          type="range"
+                          min={0}
+                          max={150}
+                          value={outputVolumeByUserId[participant.userId] ?? 100}
+                          onChange={(event) =>
+                            setOutputVolumeByUserId((prev) => ({
+                              ...prev,
+                              [participant.userId]: Number(event.target.value),
+                            }))
+                          }
+                        />
+                      </label>
+                    </span>
+                  ))}
+                {voiceChannelId === activeChannelId && voiceParticipants.length <= 1 && (
+                  <span className="subtle type-meta text-muted">No other participants yet.</span>
+                )}
+              </div>
+              <p className="subtle diagnostic-copy">
+                Disconnect causes:{' '}
+                {Object.entries(voiceDashboard.disconnectCauses)
+                  .map(([cause, count]) => `${cause}: ${count}`)
+                  .join(', ') || 'none'}
+              </p>
+            </details>
+
+            {activeScreenShare?.presenter.userId === auth.user.id && (
+              <div className="share-banner">
+                <strong>You are sharing</strong>
+                <button type="button" className="btn btn-danger btn-auto" onClick={stopScreenShare}>
+                  Stop sharing
+                </button>
+              </div>
+            )}
+          </aside>
+
+          <section className="primary-task">
+            <form
+              className="inline-form search-bar"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void runSearch(null, [null]);
+              }}
+            >
+              <input
+                className="input input-default control-full"
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder={chatMode === 'dm' ? 'Search DMs' : 'Search channel messages'}
+                aria-label="Search messages"
+              />
+              <button type="submit" className="btn btn-primary btn-auto" disabled={isSearching}>
+                {isSearching ? 'Searching...' : 'Search'}
+              </button>
+              {showingSearchResults && (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-auto"
+                  onClick={() => {
+                    setSearchQuery('');
+                    setSearchResults([]);
+                    setSearchNextCursor(null);
+                    setSearchCursorTrail([null]);
+                    setSearchError(null);
+                  }}
+                >
+                  Clear
+                </button>
+              )}
+            </form>
+            {showingSearchResults && (
+              <div className="search-pagination">
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-auto"
+                  onClick={() => {
+                    if (searchCursorTrail.length <= 1) {
+                      return;
+                    }
+                    const previousTrail = searchCursorTrail.slice(0, -1);
+                    const previousCursor = previousTrail[previousTrail.length - 1] ?? null;
+                    void runSearch(previousCursor, previousTrail);
+                  }}
+                  disabled={isSearching || searchCursorTrail.length <= 1}
+                >
+                  Previous
+                </button>
+                <span className="subtle type-meta text-muted">Page {searchCursorTrail.length}</span>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-auto"
+                  onClick={() => {
+                    if (!searchNextCursor) {
+                      return;
+                    }
+                    const nextTrail = [...searchCursorTrail, searchNextCursor];
+                    void runSearch(searchNextCursor, nextTrail);
+                  }}
+                  disabled={isSearching || !searchNextCursor}
+                >
+                  Next
+                </button>
+              </div>
+            )}
+            {searchError && <p className="error">{searchError}</p>}
+
+            <section className="chat-box" aria-label="Messages">
+              {activeScreenShare && activeScreenShare.channelId === activeChannelId && (
+                <article className="screen-share-card">
+                  <header>
+                    <strong>{activeScreenShare.presenter.username}</strong>
+                    <span className="subtle type-meta text-secondary">is sharing their screen</span>
+                  </header>
+                  <video
+                    ref={remoteScreenVideoRef}
+                    autoPlay
+                    muted={activeScreenShare.presenter.userId === auth.user.id}
+                    playsInline
+                  />
+                </article>
+              )}
+              {chatMode === 'channel' && !activeChannelId && (
+                <p className="empty">Pick a channel to start chatting.</p>
+              )}
+              {chatMode === 'dm' && !activeDmThreadId && (
+                <p className="empty">Select a DM thread.</p>
+              )}
+              {((chatMode === 'channel' && activeChannelId) ||
+                (chatMode === 'dm' && activeDmThreadId)) &&
+                displayedMessages.length === 0 && (
+                  <p className="empty">
+                    {showingSearchResults ? 'No matching messages.' : 'No messages yet.'}
+                  </p>
+                )}
+              {displayedMessages.map((message) => (
+                <article key={message.id} className="message">
+                  <header>
+                    <strong>{'user' in message ? message.user : message.senderUsername}</strong>
+                    <time className="type-meta text-muted">
+                      {new Date(message.createdAt).toLocaleTimeString()}
+                    </time>
+                    {'editedAt' in message && message.editedAt && (
+                      <span className="subtle type-meta text-muted">(edited)</span>
+                    )}
+                  </header>
+                  {'user' in message && editingMessageId === message.id ? (
+                    <form
+                      className="inline-form"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        void editMessage(message.id);
+                      }}
+                    >
+                      <input
+                        className="input input-default control-full"
+                        aria-label="Edit message"
+                        value={editDraft}
+                        maxLength={300}
+                        onChange={(event) => setEditDraft(event.target.value)}
+                      />
+                      <button type="submit" className="btn btn-primary btn-auto">
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-auto"
+                        onClick={() => {
+                          setEditingMessageId(null);
+                          setEditDraft('');
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </form>
+                  ) : (
+                    <p className="type-body text-primary">
+                      {renderMessageText(message.text, auth.user.username)}
+                    </p>
+                  )}
+                  {'attachments' in message && message.attachments.length > 0 && (
+                    <div className="attachment-grid">
+                      {message.attachments.map((attachment) => {
+                        const attachmentUrl = `${apiBase}${attachment.url}`;
+                        const isClip =
+                          attachment.mimeType === 'video/webm' ||
+                          attachment.fileName.startsWith('highlight-');
+                        if (isClip) {
+                          return (
+                            <article key={attachment.id} className="attachment-card file clip-card">
+                              <strong>🎞️ Highlight clip</strong>
+                              <video controls preload="metadata" src={attachmentUrl} />
+                              <a
+                                href={attachmentUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                download={attachment.fileName}
+                              >
+                                Download {attachment.fileName}
+                              </a>
+                            </article>
+                          );
+                        }
+
+                        return (
+                          <a
+                            key={attachment.id}
+                            className={
+                              attachment.category === 'image'
+                                ? 'attachment-card image'
+                                : 'attachment-card file'
+                            }
+                            href={attachmentUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            download={attachment.fileName}
+                          >
+                            {attachment.category === 'image' ? (
+                              <img src={attachmentUrl} alt={attachment.fileName} />
+                            ) : (
+                              <span className="file-attachment-label">
+                                {attachmentIcon(attachment.category)} {attachment.fileName}
+                              </span>
+                            )}
+                          </a>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {'user' in message && chatMode === 'channel' && (
+                    <div className="message-actions">
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-auto"
+                        onClick={() => reportMessage(message.id)}
+                      >
+                        Report
+                      </button>
+                      {message.userId === auth.user.id && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingMessageId(message.id);
+                            setEditDraft(message.text);
+                          }}
+                        >
+                          Edit
+                        </button>
+                      )}
+                      {(message.userId === auth.user.id || isServerOwner) && (
+                        <button
+                          type="button"
+                          className="btn btn-danger btn-auto"
+                          onClick={() => deleteMessage(message.id)}
+                        >
+                          Delete
+                        </button>
+                      )}
+                      {message.userId === null && (
+                        <>
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-auto"
+                            onClick={() => void copyTextToClipboard(message.id, message.text)}
+                          >
+                            {copiedAiMessageId === message.id ? 'Copied' : 'Copy'}
+                          </button>
+                          {aiRequestIdByMessageId[message.id] && (
+                            <button
+                              type="button"
+                              className="btn btn-primary btn-auto"
+                              onClick={() => retryAiPrompt(aiRequestIdByMessageId[message.id])}
+                            >
+                              Retry
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  )}
+                </article>
               ))}
-            </div>
+
+              {shouldShowStreamingAiReply && streamingAiReply && (
+                <article className="message" aria-live="polite">
+                  <header>
+                    <strong>{streamingAiReply.botDisplayName}</strong>
+                    <span className="subtle type-meta text-secondary">replying…</span>
+                  </header>
+                  <p className="type-body text-primary">{streamingAiReply.text || '…'}</p>
+                </article>
+              )}
+            </section>
+
+            {chatMode === 'channel' && (
+              <p className="typing-indicator" aria-live="polite">
+                {typingUsers.length === 1 && `${typingUsers[0].username} is typing...`}
+                {typingUsers.length > 1 &&
+                  `${typingUsers
+                    .slice(0, 2)
+                    .map((user) => user.username)
+                    .join(
+                      ', ',
+                    )}${typingUsers.length > 2 ? ` +${typingUsers.length - 2} others` : ''} are typing...`}
+                {typingUsers.length === 0 && '\u00A0'}
+              </p>
+            )}
+
+            <form
+              className="composer"
+              onSubmit={(event) => {
+                event.preventDefault();
+                sendMessage();
+              }}
+            >
+              <input
+                className="input input-default"
+                value={draft}
+                onChange={(event) => {
+                  const nextValue = event.target.value;
+                  setDraft(nextValue);
+
+                  if (chatMode !== 'channel') {
+                    return;
+                  }
+
+                  const socket = socketRef.current;
+                  if (!socket || socket.readyState !== WebSocket.OPEN || !activeChannelId) {
+                    return;
+                  }
+
+                  if (!nextValue.trim()) {
+                    sendTypingStop(activeChannelId);
+                    lastSentChannelTextRef.current = nextValue;
+                    return;
+                  }
+
+                  if (!isTypingRef.current) {
+                    socket.send(
+                      JSON.stringify({
+                        type: 'typing:start',
+                        payload: { channelId: activeChannelId },
+                      }),
+                    );
+                    isTypingRef.current = true;
+                  }
+
+                  queueTypingStop();
+                }}
+                onBlur={() => sendTypingStop()}
+                placeholder={
+                  chatMode === 'dm'
+                    ? activeDmThreadId
+                      ? 'Type a DM'
+                      : 'Select a DM thread'
+                    : activeChannelId
+                      ? 'Type a message'
+                      : 'Select a channel first'
+                }
+                aria-label="Message"
+                maxLength={300}
+              />
+              {chatMode === 'channel' && (
+                <label className="btn btn-secondary btn-auto upload-button upload-control">
+                  Attach
+                  <input
+                    type="file"
+                    accept="*/*"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      event.currentTarget.value = '';
+                      if (!file) {
+                        return;
+                      }
+
+                      void uploadAttachment(file);
+                    }}
+                    hidden
+                  />
+                </label>
+              )}
+              <button
+                type="submit"
+                className="btn btn-primary btn-auto"
+                disabled={
+                  connectionState !== 'open' ||
+                  (!draft.trim() &&
+                    pendingAttachmentUploads.filter((item) => item.status === 'uploaded').length ===
+                      0) ||
+                  (chatMode === 'dm' ? !activeDmThreadId : !activeChannelId)
+                }
+              >
+                Send
+              </button>
+            </form>
+            {chatMode === 'channel' && pendingAttachmentUploads.length > 0 && (
+              <div className="attachment-grid pending-uploads">
+                {pendingAttachmentUploads.map((item) => (
+                  <figure key={item.localId}>
+                    {item.previewUrl ? (
+                      <img src={item.previewUrl} alt={item.fileName} />
+                    ) : (
+                      <div className="pending-file-icon">{attachmentIcon(item.category)}</div>
+                    )}
+                    <figcaption>{item.fileName}</figcaption>
+                    <figcaption>
+                      {item.status === 'failed' ? 'failed' : `${item.progress}%`}
+                    </figcaption>
+                  </figure>
+                ))}
+              </div>
             )}
           </section>
         </section>
@@ -3980,195 +4314,257 @@ export function App() {
             <h3 className="type-section-header text-primary">
               AI Settings <span className="panel-priority">collapsible</span>
             </h3>
-          {activeServerAiDraft ? (
-            <form className="ai-settings-panel" onSubmit={(event) => void saveActiveServerAiSettings(event)}>
-              <div className="ai-status-badges">
-                <span className={activeServerAiDraft.status.enabled ? 'status-badge success' : 'status-badge'}>enabled</span>
-                <span className={activeServerAiDraft.status.keyMissing ? 'status-badge danger' : 'status-badge'}>key missing</span>
-                <span className={activeServerAiDraft.status.budgetReached ? 'status-badge danger' : 'status-badge'}>budget reached</span>
-                <span className={activeServerAiDraft.status.degradedMode ? 'status-badge warning' : 'status-badge'}>degraded mode</span>
-              </div>
-              <label className="control-toggle-row">
-                <span className="subtle type-meta text-secondary">Enable assistant</span>
-                <input
-                  type="checkbox"
-                  checked={activeServerAiDraft.enabled}
-                  disabled={!isServerOwner}
-                  onChange={(event) => updateActiveServerAiDraft({ enabled: event.target.checked })}
-                />
-              </label>
-              <label>
-                <span className="subtle type-meta text-secondary">Model</span>
-                <select
-                  className="input input-default control-full"
-                  value={activeServerAiDraft.model}
-                  disabled={!isServerOwner}
-                  onChange={(event) => updateActiveServerAiDraft({ model: event.target.value })}
-                >
-                  {AI_MODEL_OPTIONS.map((model) => (
-                    <option key={model} value={model}>
-                      {model}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <span className="subtle type-meta text-secondary">System prompt</span>
-                <textarea
-                  className="input input-default control-full"
-                  rows={4}
-                  value={activeServerAiDraft.systemPrompt ?? ''}
-                  readOnly={!isServerOwner}
-                  onChange={(event) =>
-                    updateActiveServerAiDraft({
-                      systemPrompt: event.target.value.trim().length > 0 ? event.target.value : null,
-                    })
-                  }
-                />
-              </label>
-              <label>
-                <span className="subtle type-meta text-secondary">Temperature</span>
-                <input
-                  className="input input-default control-full"
-                  type="number"
-                  min={0}
-                  max={2}
-                  step={0.1}
-                  value={activeServerAiDraft.temperature ?? 0.7}
-                  readOnly={!isServerOwner}
-                  onChange={(event) =>
-                    updateActiveServerAiDraft({ temperature: Number(event.target.value) || 0 })
-                  }
-                />
-              </label>
-              <label>
-                <span className="subtle type-meta text-secondary">Max reply length (tokens)</span>
-                <input
-                  className="input input-default control-full"
-                  type="number"
-                  min={1}
-                  value={activeServerAiDraft.maxTokensPerReply ?? 512}
-                  readOnly={!isServerOwner}
-                  onChange={(event) =>
-                    updateActiveServerAiDraft({ maxTokensPerReply: Number(event.target.value) || 1 })
-                  }
-                />
-              </label>
-              <label>
-                <span className="subtle type-meta text-secondary">Who can invoke AI</span>
-                <select
-                  className="input input-default control-full"
-                  value={activeServerAiDraft.invocationPolicy}
-                  disabled={!isServerOwner}
-                  onChange={(event) =>
-                    updateActiveServerAiDraft({ invocationPolicy: event.target.value as AiInvocationPolicy })
-                  }
-                >
-                  <option value="everyone">Everyone</option>
-                  <option value="roles">Roles (coming soon)</option>
-                </select>
-              </label>
-              {isServerOwner ? <button type="submit" className="btn btn-primary control-full">Save AI settings</button> : <small className="subtle type-meta text-muted">Owner-only settings</small>}
-            </form>
-          ) : (
-            <p className="subtle type-meta text-muted">No AI settings loaded.</p>
-          )}
+            {activeServerAiDraft ? (
+              <form
+                className="ai-settings-panel"
+                onSubmit={(event) => void saveActiveServerAiSettings(event)}
+              >
+                <div className="ai-status-badges">
+                  <span
+                    className={
+                      activeServerAiDraft.status.enabled ? 'status-badge success' : 'status-badge'
+                    }
+                  >
+                    enabled
+                  </span>
+                  <span
+                    className={
+                      activeServerAiDraft.status.keyMissing ? 'status-badge danger' : 'status-badge'
+                    }
+                  >
+                    key missing
+                  </span>
+                  <span
+                    className={
+                      activeServerAiDraft.status.budgetReached
+                        ? 'status-badge danger'
+                        : 'status-badge'
+                    }
+                  >
+                    budget reached
+                  </span>
+                  <span
+                    className={
+                      activeServerAiDraft.status.degradedMode
+                        ? 'status-badge warning'
+                        : 'status-badge'
+                    }
+                  >
+                    degraded mode
+                  </span>
+                </div>
+                <label className="control-toggle-row">
+                  <span className="subtle type-meta text-secondary">Enable assistant</span>
+                  <input
+                    type="checkbox"
+                    checked={activeServerAiDraft.enabled}
+                    disabled={!isServerOwner}
+                    onChange={(event) =>
+                      updateActiveServerAiDraft({ enabled: event.target.checked })
+                    }
+                  />
+                </label>
+                <label>
+                  <span className="subtle type-meta text-secondary">Model</span>
+                  <select
+                    className="input input-default control-full"
+                    value={activeServerAiDraft.model}
+                    disabled={!isServerOwner}
+                    onChange={(event) => updateActiveServerAiDraft({ model: event.target.value })}
+                  >
+                    {AI_MODEL_OPTIONS.map((model) => (
+                      <option key={model} value={model}>
+                        {model}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span className="subtle type-meta text-secondary">System prompt</span>
+                  <textarea
+                    className="input input-default control-full"
+                    rows={4}
+                    value={activeServerAiDraft.systemPrompt ?? ''}
+                    readOnly={!isServerOwner}
+                    onChange={(event) =>
+                      updateActiveServerAiDraft({
+                        systemPrompt:
+                          event.target.value.trim().length > 0 ? event.target.value : null,
+                      })
+                    }
+                  />
+                </label>
+                <label>
+                  <span className="subtle type-meta text-secondary">Temperature</span>
+                  <input
+                    className="input input-default control-full"
+                    type="number"
+                    min={0}
+                    max={2}
+                    step={0.1}
+                    value={activeServerAiDraft.temperature ?? 0.7}
+                    readOnly={!isServerOwner}
+                    onChange={(event) =>
+                      updateActiveServerAiDraft({ temperature: Number(event.target.value) || 0 })
+                    }
+                  />
+                </label>
+                <label>
+                  <span className="subtle type-meta text-secondary">Max reply length (tokens)</span>
+                  <input
+                    className="input input-default control-full"
+                    type="number"
+                    min={1}
+                    value={activeServerAiDraft.maxTokensPerReply ?? 512}
+                    readOnly={!isServerOwner}
+                    onChange={(event) =>
+                      updateActiveServerAiDraft({
+                        maxTokensPerReply: Number(event.target.value) || 1,
+                      })
+                    }
+                  />
+                </label>
+                <label>
+                  <span className="subtle type-meta text-secondary">Who can invoke AI</span>
+                  <select
+                    className="input input-default control-full"
+                    value={activeServerAiDraft.invocationPolicy}
+                    disabled={!isServerOwner}
+                    onChange={(event) =>
+                      updateActiveServerAiDraft({
+                        invocationPolicy: event.target.value as AiInvocationPolicy,
+                      })
+                    }
+                  >
+                    <option value="everyone">Everyone</option>
+                    <option value="roles">Roles (coming soon)</option>
+                  </select>
+                </label>
+                {isServerOwner ? (
+                  <button type="submit" className="btn btn-primary control-full">
+                    Save AI settings
+                  </button>
+                ) : (
+                  <small className="subtle type-meta text-muted">Owner-only settings</small>
+                )}
+              </form>
+            ) : (
+              <p className="subtle type-meta text-muted">No AI settings loaded.</p>
+            )}
           </section>
 
           <section className="sidebar rail-panel always-visible" data-priority="always-visible">
             <h3 className="type-section-header text-primary">
               Members <span className="panel-priority">always visible</span>
             </h3>
-          {isServerOwner && activeServer && (
-            <div className="voice-panel-actions">
-              <button
-                type="button"
-                className="btn btn-primary btn-auto"
-                onClick={() =>
-                  void authedFetch(`/servers/${activeServer.id}/audio-settings`, {
-                    method: 'PATCH',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      soundboardEnabled: !activeServer.soundboardEnabled,
-                      voiceEffectsEnabled: activeServer.voiceEffectsEnabled,
-                    }),
-                  }).then(async (res) => {
-                    if (!res.ok) return;
-                    const data = (await res.json()) as { server: ServerSummary };
-                    setServers((current) => current.map((entry) => (entry.id === data.server.id ? data.server : entry)));
-                  })
-                }
-              >
-                Soundboard: {activeServer.soundboardEnabled ? 'On' : 'Off'}
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary btn-auto"
-                onClick={() =>
-                  void authedFetch(`/servers/${activeServer.id}/audio-settings`, {
-                    method: 'PATCH',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      soundboardEnabled: activeServer.soundboardEnabled,
-                      voiceEffectsEnabled: !activeServer.voiceEffectsEnabled,
-                    }),
-                  }).then(async (res) => {
-                    if (!res.ok) return;
-                    const data = (await res.json()) as { server: ServerSummary };
-                    setServers((current) => current.map((entry) => (entry.id === data.server.id ? data.server : entry)));
-                  })
-                }
-              >
-                Voice effects: {activeServer.voiceEffectsEnabled ? 'On' : 'Off'}
-              </button>
+            {isServerOwner && activeServer && (
+              <div className="voice-panel-actions">
+                <button
+                  type="button"
+                  className="btn btn-primary btn-auto"
+                  onClick={() =>
+                    void authedFetch(`/servers/${activeServer.id}/audio-settings`, {
+                      method: 'PATCH',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        soundboardEnabled: !activeServer.soundboardEnabled,
+                        voiceEffectsEnabled: activeServer.voiceEffectsEnabled,
+                      }),
+                    }).then(async (res) => {
+                      if (!res.ok) return;
+                      const data = (await res.json()) as { server: ServerSummary };
+                      setServers((current) =>
+                        current.map((entry) => (entry.id === data.server.id ? data.server : entry)),
+                      );
+                    })
+                  }
+                >
+                  Soundboard: {activeServer.soundboardEnabled ? 'On' : 'Off'}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary btn-auto"
+                  onClick={() =>
+                    void authedFetch(`/servers/${activeServer.id}/audio-settings`, {
+                      method: 'PATCH',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        soundboardEnabled: activeServer.soundboardEnabled,
+                        voiceEffectsEnabled: !activeServer.voiceEffectsEnabled,
+                      }),
+                    }).then(async (res) => {
+                      if (!res.ok) return;
+                      const data = (await res.json()) as { server: ServerSummary };
+                      setServers((current) =>
+                        current.map((entry) => (entry.id === data.server.id ? data.server : entry)),
+                      );
+                    })
+                  }
+                >
+                  Voice effects: {activeServer.voiceEffectsEnabled ? 'On' : 'Off'}
+                </button>
+              </div>
+            )}
+            <div className="list members-list">
+              {members.map((member) => {
+                const isOnline = Boolean(
+                  activeServerId &&
+                  (onlineUserIdsByServer[activeServerId] ?? []).includes(member.userId),
+                );
+                return (
+                  <div key={member.userId} className="member-row">
+                    <span
+                      className={isOnline ? 'presence-dot online' : 'presence-dot offline'}
+                      aria-hidden="true"
+                    />
+                    <span className="type-body text-primary">{member.username}</span>
+                    <small className="subtle type-meta text-muted">{member.role}</small>
+                    {!member.canShareScreen && (
+                      <small className="subtle type-meta text-muted">no-share</small>
+                    )}
+                    {isServerOwner && member.userId !== auth.user.id && (
+                      <>
+                        {member.isMuted ? (
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-auto"
+                            onClick={() => unmuteMember(member.userId)}
+                          >
+                            Unmute
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-auto"
+                            onClick={() => muteMember(member.userId)}
+                          >
+                            Mute
+                          </button>
+                        )}
+                        <label className="control-toggle-row subtle type-meta text-secondary">
+                          <input
+                            type="checkbox"
+                            checked={member.canShareScreen}
+                            onChange={(event) =>
+                              void updateMemberPermission(member.userId, event.target.checked)
+                            }
+                          />
+                          can-share
+                        </label>
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+              {members.length === 0 && <p className="empty">No members yet.</p>}
             </div>
-          )}
-          <div className="list members-list">
-            {members.map((member) => {
-              const isOnline = Boolean(
-                activeServerId &&
-                (onlineUserIdsByServer[activeServerId] ?? []).includes(member.userId),
-              );
-              return (
-                <div key={member.userId} className="member-row">
-                  <span
-                    className={isOnline ? 'presence-dot online' : 'presence-dot offline'}
-                    aria-hidden="true"
-                  />
-                  <span className="type-body text-primary">{member.username}</span>
-                  <small className="subtle type-meta text-muted">{member.role}</small>
-                  {!member.canShareScreen && <small className="subtle type-meta text-muted">no-share</small>}
-                  {isServerOwner && member.userId !== auth.user.id && (
-                    <>
-                      {member.isMuted ? (
-                        <button type="button" className="btn btn-ghost btn-auto" onClick={() => unmuteMember(member.userId)}>
-                          Unmute
-                        </button>
-                      ) : (
-                        <button type="button" className="btn btn-ghost btn-auto" onClick={() => muteMember(member.userId)}>
-                          Mute
-                        </button>
-                      )}
-                      <label className="control-toggle-row subtle type-meta text-secondary">
-                        <input
-                          type="checkbox"
-                          checked={member.canShareScreen}
-                          onChange={(event) =>
-                            void updateMemberPermission(member.userId, event.target.checked)
-                          }
-                        />
-                        can-share
-                      </label>
-                    </>
-                  )}
-                </div>
-              );
-            })}
-            {members.length === 0 && <p className="empty">No members yet.</p>}
-          </div>
           </section>
 
-          <details className="sidebar rail-panel advanced-panel" data-priority="advanced" open={false}>
+          <details
+            className="sidebar rail-panel advanced-panel"
+            data-priority="advanced"
+            open={false}
+          >
             <summary className="type-section-header text-primary">
               Diagnostics & status internals <span className="panel-priority">advanced</span>
             </summary>
@@ -4192,9 +4588,13 @@ export function App() {
                 />
                 Enable spatial audio
               </label>
-              <small className="subtle type-meta text-muted">Permission: {notificationPermission}</small>
+              <small className="subtle type-meta text-muted">
+                Permission: {notificationPermission}
+              </small>
               {!spatialAudioAvailable && (
-                <small className="subtle type-meta text-muted">Spatial audio unavailable in this browser.</small>
+                <small className="subtle type-meta text-muted">
+                  Spatial audio unavailable in this browser.
+                </small>
               )}
             </section>
             <div className="list">

@@ -23,6 +23,7 @@ import {
   verifyPassword,
   verifyRefreshToken,
 } from './auth.js';
+import { setRuntimeOpenAiApiKeyOverride } from './ai/openai.js';
 
 type UserRecord = {
   id: string;
@@ -246,6 +247,7 @@ type AppDependencies = {
     username: string,
     actorUserId: string,
   ) => Promise<{ userId: string; username: string } | null>;
+  joinServerByName?: (serverName: string, userId: string) => Promise<string | null>;
   listServerMembers: (serverId: string, userId: string) => Promise<ServerMember[]>;
   createOrGetDmThread: (userAId: string, userBId: string) => Promise<string>;
   listDmThreadsForUser: (userId: string) => Promise<DmThreadSummary[]>;
@@ -297,6 +299,13 @@ type AppDependencies = {
       totalChannels: number;
       totalDmThreads: number;
     };
+  }) => void;
+  notifyServerInvite?: (event: {
+    userId: string;
+    serverId: string;
+    serverName: string;
+    invitedByUserId: string;
+    invitedByUsername: string;
   }) => void;
 };
 
@@ -983,6 +992,22 @@ export function createApp(deps: AppDependencies) {
   });
 
 
+  app.patch('/settings/openai-key', async (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) {
+      return;
+    }
+
+    const apiKey = String(req.body?.apiKey ?? '').trim();
+    if (!apiKey) {
+      res.status(400).json({ error: 'apiKey is required.' });
+      return;
+    }
+
+    setRuntimeOpenAiApiKeyOverride(apiKey);
+    res.status(200).json({ ok: true });
+  });
+
   app.get('/servers', async (req, res) => {
     const auth = requireAuth(req, res);
     if (!auth) {
@@ -991,6 +1016,32 @@ export function createApp(deps: AppDependencies) {
 
     const servers = await deps.listServersForUser(auth.userId);
     res.json({ servers });
+  });
+
+  app.post('/servers/join', async (req, res) => {
+    const auth = requireAuth(req, res);
+    if (!auth) {
+      return;
+    }
+
+    const serverName = String(req.body?.serverName ?? '').trim();
+    if (!serverName) {
+      res.status(400).json({ error: 'serverName is required.' });
+      return;
+    }
+
+    if (!deps.joinServerByName) {
+      res.status(501).json({ error: 'Server join is not available.' });
+      return;
+    }
+
+    const joinedServerId = await deps.joinServerByName(serverName, auth.userId);
+    if (!joinedServerId) {
+      res.status(404).json({ error: 'Server not found.' });
+      return;
+    }
+
+    res.status(200).json({ serverId: joinedServerId });
   });
 
   app.post('/servers', async (req, res) => {
@@ -1082,6 +1133,20 @@ export function createApp(deps: AppDependencies) {
       }
 
       res.status(201).json({ member: added });
+
+      const actor = await deps.findUserById(auth.userId);
+      const server = (await deps.listServersForUser(auth.userId)).find(
+        (entry) => entry.id === req.params.serverId,
+      );
+      if (actor && server) {
+        deps.notifyServerInvite?.({
+          userId: added.userId,
+          serverId: req.params.serverId,
+          serverName: server.name,
+          invitedByUserId: auth.userId,
+          invitedByUsername: actor.username,
+        });
+      }
     } catch {
       res.status(403).json({ error: 'Only server owners can add members.' });
     }

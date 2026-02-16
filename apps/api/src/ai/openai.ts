@@ -9,6 +9,12 @@ const OPENAI_BASE_URL = 'https://api.openai.com/v1';
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_RETRIES = 2;
 
+let runtimeOpenAiApiKeyOverride: string | null = null;
+
+export function setRuntimeOpenAiApiKeyOverride(apiKey: string | null) {
+  runtimeOpenAiApiKeyOverride = apiKey?.trim() || null;
+}
+
 export type OpenAiConfig = {
   apiKey: string | null;
   organization: string | null;
@@ -22,7 +28,7 @@ export function createOpenAiConfig(env: NodeJS.ProcessEnv = process.env): OpenAi
   const maxRetries = parseNumber(env.OPENAI_MAX_RETRIES, DEFAULT_MAX_RETRIES);
 
   return {
-    apiKey: env.OPENAI_API_KEY?.trim() || null,
+    apiKey: runtimeOpenAiApiKeyOverride ?? (env.OPENAI_API_KEY?.trim() || null),
     organization: env.OPENAI_ORG_ID?.trim() || null,
     project: env.OPENAI_PROJECT_ID?.trim() || null,
     timeoutMs,

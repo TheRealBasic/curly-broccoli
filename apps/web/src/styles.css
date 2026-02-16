@@ -1,7 +1,7 @@
 :root {
-  --text-primary: #0f172a;
-  --text-secondary: #334155;
-  --text-muted: #64748b;
+  --text-primary: #f2f3f5;
+  --text-secondary: #c4c9d1;
+  --text-muted: #9ca3af;
   --text-inverse: #ffffff;
   --text-danger: #b91c1c;
   --text-warning: #92400e;
@@ -34,7 +34,7 @@
     sans-serif;
   line-height: var(--leading-normal);
   color: var(--text-primary);
-  background: #f3f4f6;
+  background: #1e1f22;
 }
 
 .btn {
@@ -52,13 +52,13 @@
 }
 
 .btn-secondary {
-  background: #4b5563;
+  background: #5865f2;
   color: var(--text-inverse);
 }
 
 .btn-ghost {
-  border-color: #d1d5db;
-  background: #f9fafb;
+  border-color: #3f4147;
+  background: #313338;
   color: var(--text-primary);
 }
 
@@ -84,7 +84,7 @@
 
 .input {
   border-radius: 0.4rem;
-  border: 1px solid #d1d5db;
+  border: 1px solid #3f4147;
   padding: 0 var(--space-12);
   min-height: var(--control-height);
   font-size: 0.95rem;
@@ -168,14 +168,14 @@ html,
 }
 
 .chat-layout {
-  width: min(100%, 1680px);
-  margin: 0 auto;
-  padding: 0 var(--space-16);
+  width: 100%;
+  margin: 0;
+  padding: 0 var(--space-12);
   min-height: 100vh;
   max-height: 100vh;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  gap: var(--space-16);
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: var(--space-8);
   overflow: hidden;
 }
 
@@ -198,15 +198,25 @@ h1 {
 .chat-header {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
+  align-items: center;
   gap: var(--space-16);
-  padding-top: var(--space-16);
+  padding-top: var(--space-12);
+}
+
+.header-actions {
+  display: flex;
+  gap: var(--space-8);
 }
 
 .status-strip {
-  margin-top: calc(var(--space-16) * -0.5);
+  margin-top: 0;
   display: grid;
   gap: var(--space-8);
+  position: sticky;
+  top: 64px;
+  z-index: 31;
+  background: #1e1f22;
+  padding-bottom: var(--space-4);
 }
 
 .status-strip-badges {
@@ -356,9 +366,9 @@ h1 {
 
 .sidebar,
 .chat-panel {
-  border: 1px solid #d1d5db;
+  border: 1px solid #3f4147;
   border-radius: 0.5rem;
-  background: #fff;
+  background: #2b2d31;
   padding: var(--panel-body-padding);
 }
 
@@ -390,8 +400,8 @@ h1 {
 }
 
 .list-item {
-  border: 1px solid #e5e7eb;
-  background: #f9fafb;
+  border: 1px solid #3f4147;
+  background: #313338;
   border-radius: 0.4rem;
   padding: 0 var(--space-12);
   min-height: var(--control-height);
@@ -400,8 +410,8 @@ h1 {
 }
 
 .list-item.active {
-  background: #dbeafe;
-  border-color: #93c5fd;
+  background: #404249;
+  border-color: #5865f2;
 }
 
 .inline-form {
@@ -415,9 +425,9 @@ h1 {
 }
 
 .chat-box {
-  border: 1px solid #d1d5db;
+  border: 1px solid #3f4147;
   border-radius: 0.5rem;
-  background: #fff;
+  background: #2b2d31;
   min-height: 0;
   max-height: none;
   height: 100%;
@@ -468,13 +478,13 @@ h1 {
   height: 110px;
   object-fit: cover;
   border-radius: 0.4rem;
-  border: 1px solid #d1d5db;
+  border: 1px solid #3f4147;
 }
 
 .attachment-card.file {
   display: flex;
   align-items: center;
-  border: 1px solid #d1d5db;
+  border: 1px solid #3f4147;
   border-radius: 0.4rem;
   padding: var(--space-8);
   background: #f9fafb;
@@ -502,7 +512,7 @@ h1 {
   width: 100%;
   min-height: 110px;
   border-radius: 0.4rem;
-  border: 1px solid #d1d5db;
+  border: 1px solid #3f4147;
   display: grid;
   place-items: center;
   background: #f3f4f6;
@@ -547,7 +557,7 @@ h1 {
   width: min(420px, calc(100vw - 2 * var(--space-16)));
   z-index: 20;
   background: #f8fafc;
-  border: 1px solid #d1d5db;
+  border: 1px solid #3f4147;
   border-radius: 0.75rem;
   padding: var(--space-12);
   box-shadow: 0 14px 34px rgba(15, 23, 42, 0.18);
@@ -588,17 +598,17 @@ h1 {
   position: sticky;
   bottom: 0;
   z-index: 15;
-  background: #fff;
+  background: #2b2d31;
   padding: var(--space-8);
-  border: 1px solid #d1d5db;
+  border: 1px solid #3f4147;
   border-radius: 0.5rem;
 }
 
 .guild-layout .chat-header {
   position: sticky;
   top: 0;
-  z-index: 30;
-  background: #f3f4f6;
+  z-index: 32;
+  background: #1e1f22;
   padding-bottom: var(--space-8);
 }
 
@@ -772,7 +782,7 @@ h1 {
 }
 
 .voice-panel {
-  border: 1px solid #d1d5db;
+  border: 1px solid #3f4147;
   border-radius: 0.5rem;
   padding: var(--panel-body-padding);
   display: grid;
@@ -836,7 +846,7 @@ h1 {
 }
 
 .share-consent-card {
-  border: 1px solid #d1d5db;
+  border: 1px solid #3f4147;
   background: #f8fafc;
   border-radius: 0.5rem;
   padding: var(--space-12) var(--space-16);
@@ -879,7 +889,7 @@ h1 {
   border: 1px solid #cbd5e1;
   padding: 0 var(--space-12);
   min-height: var(--control-height);
-  background: #fff;
+  background: #2b2d31;
 }
 
 .highlight-panel {

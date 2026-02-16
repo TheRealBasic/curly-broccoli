@@ -439,6 +439,7 @@ export function App() {
   const [activeServerId, setActiveServerId] = useState<string | null>(null);
   const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
   const [serverNameInput, setServerNameInput] = useState('');
+  const [joinServerNameInput, setJoinServerNameInput] = useState('');
   const [channelNameInput, setChannelNameInput] = useState('');
   const [inviteUsernameInput, setInviteUsernameInput] = useState('');
   const [dmThreads, setDmThreads] = useState<DmThreadSummary[]>([]);
@@ -468,6 +469,8 @@ export function App() {
         ? Notification.permission
         : 'unsupported',
   );
+  const [openAiApiKeyInput, setOpenAiApiKeyInput] = useState('');
+  const [settingsMenuOpen, setSettingsMenuOpen] = useState(false);
 
   const wsUrl = useMemo(() => {
     if (!auth?.accessToken) {
@@ -1597,6 +1600,30 @@ export function App() {
     setAiSettingsDraftByServer((current) => ({ ...current, [activeServerId]: data.settings }));
   }
 
+  async function saveOpenAiApiKey() {
+    const apiKey = openAiApiKeyInput.trim();
+    if (!apiKey) {
+      return;
+    }
+
+    const res = await authedFetch('/settings/openai-key', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ apiKey }),
+    });
+
+    if (!res.ok) {
+      setError('Unable to save API key.');
+      return;
+    }
+
+    setError(null);
+    setOpenAiApiKeyInput('');
+    if (activeServerId) {
+      await loadServerAiSettings(activeServerId);
+    }
+  }
+
   async function loadDmThreads() {
     const res = await authedFetch('/dm/threads');
     if (!res.ok) {
@@ -1964,6 +1991,21 @@ export function App() {
         if (parsed.type === 'notification:unread-updated') {
           setChannelUnreadCounts(parsed.payload.summary.channels);
           setDmUnreadCounts(parsed.payload.summary.dmThreads);
+        }
+
+        if (parsed.type === 'notification:server-invite') {
+          void loadServers();
+          setSystemMessage(
+            `You were invited to ${parsed.payload.serverName} by ${parsed.payload.invitedByUsername}.`,
+          );
+          if (
+            desktopNotificationsEnabledRef.current &&
+            notificationPermissionRef.current === 'granted'
+          ) {
+            new Notification('Server invite received', {
+              body: `${parsed.payload.invitedByUsername} invited you to ${parsed.payload.serverName}`,
+            });
+          }
         }
 
         if (parsed.type === 'system') {
@@ -3002,6 +3044,31 @@ export function App() {
     await loadServers();
   }
 
+  async function joinServerByName(event: FormEvent) {
+    event.preventDefault();
+    const serverName = joinServerNameInput.trim();
+    if (!serverName) {
+      return;
+    }
+
+    const res = await authedFetch('/servers/join', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ serverName }),
+    });
+
+    if (!res.ok) {
+      setError('Unable to join server by name.');
+      return;
+    }
+
+    const data = (await res.json()) as { serverId: string };
+    setJoinServerNameInput('');
+    await loadServers();
+    setActiveServerId(data.serverId);
+    setError(null);
+  }
+
   async function createChannel(event: FormEvent) {
     event.preventDefault();
     const name = channelNameInput.trim();
@@ -3282,9 +3349,18 @@ export function App() {
         <div>
           <h1 className="type-page-title text-primary">{APP_NAME}</h1>
         </div>
-        <button type="button" className="btn btn-secondary btn-auto" onClick={logout}>
-          Logout
-        </button>
+        <div className="header-actions">
+          <button
+            type="button"
+            className="btn btn-ghost btn-auto"
+            onClick={() => setSettingsMenuOpen((prev) => !prev)}
+          >
+            {settingsMenuOpen ? 'Close settings' : 'Settings'}
+          </button>
+          <button type="button" className="btn btn-secondary btn-auto" onClick={logout}>
+            Logout
+          </button>
+        </div>
       </header>
 
       <section className="status-strip" aria-label="Application status">
@@ -3370,10 +3446,21 @@ export function App() {
                 className="input input-default control-full"
                 value={serverNameInput}
                 onChange={(event) => setServerNameInput(event.target.value)}
-                placeholder="New server"
+                placeholder="Create server"
               />
               <button type="submit" className="btn btn-primary btn-auto">
                 Create
+              </button>
+            </form>
+            <form className="inline-form" onSubmit={joinServerByName}>
+              <input
+                className="input input-default control-full"
+                value={joinServerNameInput}
+                onChange={(event) => setJoinServerNameInput(event.target.value)}
+                placeholder="Join server by name"
+              />
+              <button type="submit" className="btn btn-secondary btn-auto">
+                Join
               </button>
             </form>
           </section>
@@ -4419,6 +4506,7 @@ export function App() {
         </section>
 
         <aside className="app-rail context-rail">
+          {settingsMenuOpen && (
           <section className="sidebar rail-panel collapsible-panel" data-priority="collapsible">
             <h3 className="type-section-header text-primary">
               AI Settings <span className="panel-priority">collapsible</span>
@@ -4428,6 +4516,21 @@ export function App() {
                 className="ai-settings-panel"
                 onSubmit={(event) => void saveActiveServerAiSettings(event)}
               >
+                <div className="inline-form">
+                  <input
+                    className="input input-default control-full"
+                    type="password"
+                    value={openAiApiKeyInput}
+                    onChange={(event) => setOpenAiApiKeyInput(event.target.value)}
+                    placeholder="Paste OpenAI API key"
+                  />
+                  <button type="button" className="btn btn-secondary btn-auto" onClick={() => void saveOpenAiApiKey()}>
+                    Save key
+                  </button>
+                </div>
+                <div className="subtle type-meta text-muted">
+                  API key is applied to this running backend instance.
+                </div>
                 <div className="ai-status-badges">
                   <span
                     className={
@@ -4561,6 +4664,7 @@ export function App() {
               <p className="subtle type-meta text-muted">No AI settings loaded.</p>
             )}
           </section>
+          )}
 
           <section className="sidebar rail-panel always-visible" data-priority="always-visible">
             <h3 className="type-section-header text-primary">
@@ -4669,6 +4773,7 @@ export function App() {
             </div>
           </section>
 
+          {settingsMenuOpen && (
           <details
             className="sidebar rail-panel advanced-panel"
             data-priority="advanced"
@@ -4713,6 +4818,7 @@ export function App() {
               {auditLogs.length === 0 && <p className="empty">No moderation events.</p>}
             </div>
           </details>
+          )}
         </aside>
       </section>
     </main>

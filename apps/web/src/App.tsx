@@ -3500,9 +3500,10 @@ export function App() {
               className="voice-panel rail-panel always-visible accordion-panel"
               data-priority="always-visible"
               open={rightRailAccordionState.voice}
-              onToggle={(event) =>
-                setRightRailAccordionState((prev) => ({ ...prev, voice: event.currentTarget.open }))
-              }
+              onToggle={(event) => {
+                const isOpen = event.currentTarget.open;
+                setRightRailAccordionState((prev) => ({ ...prev, voice: isOpen }));
+              }}
             >
               <summary className="accordion-summary">
                 <strong className="type-panel-header text-primary">Voice</strong>
@@ -3558,12 +3559,13 @@ export function App() {
               className="voice-panel rail-panel collapsible-panel accordion-panel"
               data-priority="collapsible"
               open={rightRailAccordionState.coWatch}
-              onToggle={(event) =>
+              onToggle={(event) => {
+                const isOpen = event.currentTarget.open;
                 setRightRailAccordionState((prev) => ({
                   ...prev,
-                  coWatch: event.currentTarget.open,
-                }))
-              }
+                  coWatch: isOpen,
+                }));
+              }}
             >
               <summary className="accordion-summary">
                 <strong className="type-panel-header text-primary">Co-watch</strong>
@@ -3635,12 +3637,13 @@ export function App() {
               className="voice-panel highlight-panel rail-panel collapsible-panel accordion-panel"
               data-priority="collapsible"
               open={rightRailAccordionState.highlights}
-              onToggle={(event) =>
+              onToggle={(event) => {
+                const isOpen = event.currentTarget.open;
                 setRightRailAccordionState((prev) => ({
                   ...prev,
-                  highlights: event.currentTarget.open,
-                }))
-              }
+                  highlights: isOpen,
+                }));
+              }}
             >
               <summary className="accordion-summary">
                 <strong className="type-section-header text-primary">Highlights</strong>
@@ -3691,12 +3694,13 @@ export function App() {
               className="voice-panel rail-panel collapsible-panel accordion-panel"
               data-priority="collapsible"
               open={rightRailAccordionState.playfulAudio}
-              onToggle={(event) =>
+              onToggle={(event) => {
+                const isOpen = event.currentTarget.open;
                 setRightRailAccordionState((prev) => ({
                   ...prev,
-                  playfulAudio: event.currentTarget.open,
-                }))
-              }
+                  playfulAudio: isOpen,
+                }));
+              }}
             >
               <summary className="accordion-summary">
                 <strong className="type-section-header text-primary">Playful audio</strong>
@@ -3756,12 +3760,13 @@ export function App() {
               className="voice-panel rail-panel advanced-panel accordion-panel"
               data-priority="advanced"
               open={rightRailAccordionState.advanced}
-              onToggle={(event) =>
+              onToggle={(event) => {
+                const isOpen = event.currentTarget.open;
                 setRightRailAccordionState((prev) => ({
                   ...prev,
-                  advanced: event.currentTarget.open,
-                }))
-              }
+                  advanced: isOpen,
+                }));
+              }}
             >
               <summary className="accordion-summary">
                 <strong className="type-section-header text-primary">Advanced</strong>

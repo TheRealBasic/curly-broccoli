@@ -3344,1481 +3344,219 @@ export function App() {
   }
 
   return (
-    <main className="chat-layout guild-layout">
-      <header className="chat-header">
-        <div>
-          <h1 className="type-page-title text-primary">{APP_NAME}</h1>
-        </div>
-        <div className="header-actions">
-          <button
-            type="button"
-            className="btn btn-ghost btn-auto"
-            onClick={() => setSettingsMenuOpen((prev) => !prev)}
-          >
-            {settingsMenuOpen ? 'Close settings' : 'Settings'}
-          </button>
-          <button type="button" className="btn btn-secondary btn-auto" onClick={logout}>
-            Logout
-          </button>
-        </div>
-      </header>
-
-      <section className="status-strip" aria-label="Application status">
-        <ul className="status-strip-badges" aria-label="Status indicators">
-          <li className="status-chip" data-state="idle" aria-label={`Signed in as ${auth.user.username}`}>
-            <span className="status-chip-label">Signed in</span>
-            <strong>{auth.user.username}</strong>
-          </li>
-          <li
-            className="status-chip"
-            data-state={connectionStatusTone}
-            aria-label={`Connection is ${connectionState}`}
-          >
-            <span className="status-chip-label">Connection</span>
-            <strong>{connectionState === 'open' ? 'connected' : connectionState}</strong>
-          </li>
-          <li
-            className="status-chip"
-            data-state={notificationStatusTone}
-            aria-label={`Notification permission is ${notificationPermission}`}
-          >
-            <span className="status-chip-label">Notifications</span>
-            <strong>{notificationPermission}</strong>
-          </li>
-        </ul>
-        {shouldShowStatusNotice && (
-          <div className="status-strip-notices" aria-live="polite">
-            {error && (
-              <p className="status-notice" data-state="error" role="alert">
-                {error}
-              </p>
-            )}
-            {!error && activeScreenShare?.presenter.userId === auth.user.id && (
-              <div className="status-notice status-notice-action" data-state="warning" role="status">
-                <span>You are sharing your screen.</span>
-                <button
-                  type="button"
-                  className="btn btn-danger btn-auto"
-                  onClick={stopScreenShare}
-                  aria-label="Stop screen sharing"
-                >
-                  Stop sharing
-                </button>
-              </div>
-            )}
-            {!error && !activeScreenShare && systemMessage && (
-              <p className="status-notice" data-state="idle" role="status">
-                {systemMessage}
-              </p>
-            )}
+    <main className="discord-app" aria-label="Discord style workspace">
+      <section className="discord-shell">
+        <aside className="server-sidebar" aria-label="Servers">
+          <div className="server-list">
+            {servers.map((server) => (
+              <button
+                key={server.id}
+                type="button"
+                className={server.id === activeServerId ? 'server-icon active' : 'server-icon'}
+                onClick={() => setActiveServerId(server.id)}
+                aria-label={server.name}
+                title={server.name}
+              >
+                {server.name.slice(0, 2).toUpperCase()}
+              </button>
+            ))}
           </div>
-        )}
-      </section>
+          <div className="server-actions">
+            <button type="button" className="server-icon utility" aria-label="Add server">
+              +
+            </button>
+            <button type="button" className="server-icon utility" aria-label="Explore servers">
+              ⌕
+            </button>
+          </div>
+        </aside>
 
-      <section
-        className={`guild-shell${isMediumViewport ? ' is-medium' : ''}${isMobileViewport ? ' is-mobile' : ''}${
-          activeAuxRailTab === 'right'
-            ? ' show-right-drawer'
-            : activeAuxRailTab === 'context'
-              ? ' show-context-drawer'
-              : ''
-        }`}
-      >
-        <aside className="app-rail left-rail">
-          <section className="sidebar rail-panel always-visible" data-priority="always-visible">
-            <h3 className="type-section-header text-primary">
-              Servers <span className="panel-priority">always visible</span>
-            </h3>
-            <div className="list">
-              {servers.map((server) => (
-                <button
-                  key={server.id}
-                  type="button"
-                  className={server.id === activeServerId ? 'list-item active' : 'list-item'}
-                  onClick={() => setActiveServerId(server.id)}
-                >
-                  {server.name}
-                </button>
-              ))}
-            </div>
-            <form className="inline-form" onSubmit={createServer}>
-              <input
-                className="input input-default control-full"
-                value={serverNameInput}
-                onChange={(event) => setServerNameInput(event.target.value)}
-                placeholder="Create server"
-              />
-              <button type="submit" className="btn btn-primary btn-auto">
-                Create
-              </button>
-            </form>
-            <form className="inline-form" onSubmit={joinServerByName}>
-              <input
-                className="input input-default control-full"
-                value={joinServerNameInput}
-                onChange={(event) => setJoinServerNameInput(event.target.value)}
-                placeholder="Join server by name"
-              />
-              <button type="submit" className="btn btn-secondary btn-auto">
-                Join
-              </button>
-            </form>
-          </section>
+        <aside className="channel-sidebar" aria-label="Channels">
+          <button type="button" className="server-name-trigger">
+            {activeServer?.name ?? 'Select a server'}
+            <span aria-hidden="true">▾</span>
+          </button>
 
-          <section className="sidebar rail-panel always-visible" data-priority="always-visible">
-            <h3 className="type-section-header text-primary">
-              Channels {totalChannelUnread > 0 ? `(${totalChannelUnread})` : ''}{' '}
-              <span className="panel-priority">always visible</span>
-            </h3>
-            <div className="list">
-              {channels.map((channel) => (
+          <div className="channel-group">
+            <p className="channel-category">Text Channels</p>
+            {channels
+              .filter((_, index) => index % 2 === 0)
+              .map((channel) => (
                 <button
                   key={channel.id}
                   type="button"
-                  className={channel.id === activeChannelId ? 'list-item active' : 'list-item'}
+                  className={channel.id === activeChannelId ? 'channel-item active' : 'channel-item'}
                   onClick={() => setActiveChannelId(channel.id)}
                 >
-                  #{channel.name}
-                  {(channelUnreadCounts[channel.id] ?? 0) > 0 && (
-                    <span className="unread-badge">{channelUnreadCounts[channel.id]}</span>
-                  )}
+                  <span className="channel-icon" aria-hidden="true">#</span>
+                  <span className="channel-label">{channel.name}</span>
                 </button>
               ))}
-            </div>
-            <form className="inline-form" onSubmit={createChannel}>
-              <input
-                className="input input-default control-full"
-                value={channelNameInput}
-                onChange={(event) => setChannelNameInput(event.target.value)}
-                placeholder="New channel"
-              />
-              <button type="submit" className="btn btn-primary btn-auto" disabled={!activeServerId}>
-                Add
-              </button>
-            </form>
-            <form className="inline-form" onSubmit={addMember}>
-              <input
-                className="input input-default control-full"
-                value={inviteUsernameInput}
-                onChange={(event) => setInviteUsernameInput(event.target.value)}
-                placeholder="Invite username"
-              />
-              <button type="submit" className="btn btn-primary btn-auto" disabled={!activeServerId}>
-                Invite
-              </button>
-            </form>
-          </section>
+          </div>
 
-          <section className="sidebar rail-panel collapsible-panel" data-priority="collapsible">
-            <h3 className="type-section-header text-primary">
-              Direct Messages {totalDmUnread > 0 ? `(${totalDmUnread})` : ''}{' '}
-              <span className="panel-priority">collapsible</span>
-            </h3>
-            <div className="list">
-              {dmThreads.map((thread) => (
+          <div className="channel-group">
+            <p className="channel-category">Voice Channels</p>
+            {channels
+              .filter((_, index) => index % 2 === 1)
+              .map((channel) => (
                 <button
-                  key={thread.id}
+                  key={channel.id}
                   type="button"
-                  className={
-                    thread.id === activeDmThreadId && chatMode === 'dm'
-                      ? 'list-item active'
-                      : 'list-item'
-                  }
-                  onClick={() => {
-                    setChatMode('dm');
-                    setActiveDmThreadId(thread.id);
-                  }}
+                  className={channel.id === activeChannelId ? 'channel-item active' : 'channel-item'}
+                  onClick={() => setActiveChannelId(channel.id)}
                 >
-                  @{thread.otherUsername}
-                  {(dmUnreadCounts[thread.id] ?? 0) > 0 && (
-                    <span className="unread-badge">{dmUnreadCounts[thread.id]}</span>
-                  )}
+                  <span className="channel-icon" aria-hidden="true">🔊</span>
+                  <span className="channel-label">{channel.name}</span>
                 </button>
               ))}
-            </div>
-            <form className="inline-form" onSubmit={startDm}>
-              <input
-                className="input input-default control-full"
-                value={dmUsernameInput}
-                onChange={(event) => setDmUsernameInput(event.target.value)}
-                placeholder="Start DM (username)"
-              />
-              <button type="submit" className="btn btn-primary btn-auto">
-                Start
+          </div>
+
+          {voiceChannelId === activeChannelId && (
+            <section className="voice-status-panel" aria-label="Voice status">
+              <div className="voice-status-title">
+                <span className="speaking-dot" aria-hidden="true" />
+                Voice Connected
+              </div>
+              <div className="voice-connected-list">
+                {voiceParticipants.map((participant) => (
+                  <div
+                    key={participant.userId}
+                    className={participant.userId === auth.user.id ? 'voice-user speaking' : 'voice-user'}
+                  >
+                    <span className="mic-indicator" aria-hidden="true">🎤</span>
+                    <span>{participant.username}</span>
+                  </div>
+                ))}
+              </div>
+              <button type="button" className="voice-screen-btn" onClick={startScreenShare}>
+                Share Screen
               </button>
-            </form>
-            <button type="button" className="list-item" onClick={() => setChatMode('channel')}>
-              Back to channels
-            </button>
+            </section>
+          )}
+
+          <section className="user-panel" aria-label="User panel">
+            <div className="user-avatar">{auth.user.username.slice(0, 1).toUpperCase()}</div>
+            <div className="user-meta">
+              <strong>{auth.user.username}</strong>
+              <small>Online</small>
+            </div>
+            <div className="user-controls" aria-label="User controls">
+              <button type="button" onClick={joinVoiceChannel} aria-label="Toggle microphone">🎙</button>
+              <button type="button" onClick={leaveVoiceChannel} aria-label="Toggle headphones">🎧</button>
+              <button type="button" onClick={() => setSettingsMenuOpen((prev) => !prev)} aria-label="Settings">⚙</button>
+            </div>
           </section>
         </aside>
 
-        <section className="chat-panel center-rail">
-          {isMediumViewport && (
-            <div className="aux-rail-tabs" role="tablist" aria-label="Auxiliary panels">
-              <button
-                type="button"
-                className={
-                  activeAuxRailTab === 'right'
-                    ? 'btn btn-secondary btn-auto active'
-                    : 'btn btn-ghost btn-auto'
-                }
-                onClick={() => setActiveAuxRailTab((prev) => (prev === 'right' ? 'none' : 'right'))}
-              >
-                Voice & media
-              </button>
-              <button
-                type="button"
-                className={
-                  activeAuxRailTab === 'context'
-                    ? 'btn btn-secondary btn-auto active'
-                    : 'btn btn-ghost btn-auto'
-                }
-                onClick={() =>
-                  setActiveAuxRailTab((prev) => (prev === 'context' ? 'none' : 'context'))
-                }
-              >
-                Context
-              </button>
+        <section className="chat-area" aria-label="Main chat">
+          <header className="chat-topbar">
+            <div className="chat-topbar-main">
+              <strong>#{channels.find((channel) => channel.id === activeChannelId)?.name ?? 'general'}</strong>
+              <span>{activeServer ? `Welcome to ${activeServer.name}` : 'Pick a server and channel'}</span>
             </div>
-          )}
-          <aside className="app-rail right-rail">
-            <details
-              className="voice-panel rail-panel always-visible accordion-panel"
-              data-priority="always-visible"
-              open={rightRailAccordionState.voice}
-              onToggle={(event) => {
-                const isOpen = event.currentTarget.open;
-                setRightRailAccordionState((prev) => ({ ...prev, voice: isOpen }));
-              }}
-            >
-              <summary className="accordion-summary">
-                <strong className="type-panel-header text-primary">Voice</strong>
-                <span className="subtle type-meta text-muted">Voice: {voiceSectionSummary}</span>
-              </summary>
-              <div className="voice-panel-actions">
-                {voiceChannelId === activeChannelId ? (
-                  <button type="button" className="btn btn-success btn-auto" onClick={leaveVoice}>
-                    Leave voice
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className="btn btn-success btn-auto"
-                    onClick={() => void joinVoice()}
-                    disabled={!activeChannelId}
-                  >
-                    Join voice
-                  </button>
-                )}
-                {activeScreenShare?.presenter.userId === auth.user.id ? (
-                  <button
-                    type="button"
-                    className="btn btn-danger btn-auto"
-                    onClick={stopScreenShare}
-                  >
-                    Stop sharing
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className="btn btn-success btn-auto"
-                    onClick={() => void startScreenShare()}
-                    disabled={
-                      voiceChannelId !== activeChannelId ||
-                      !!activeScreenShare ||
-                      voiceParticipants.length > SCREEN_P2P_PARTICIPANT_THRESHOLD ||
-                      (currentMember ? !currentMember.canShareScreen : false)
-                    }
-                  >
-                    Share screen
-                  </button>
-                )}
-              </div>
-              <p className="subtle type-body text-secondary">
-                {voiceChannelId === activeChannelId
-                  ? `Connected in #${channels.find((channel) => channel.id === activeChannelId)?.name ?? 'channel'}`
-                  : 'Join voice for the active channel'}
-              </p>
-            </details>
-
-            <details
-              className="voice-panel rail-panel collapsible-panel accordion-panel"
-              data-priority="collapsible"
-              open={rightRailAccordionState.coWatch}
-              onToggle={(event) => {
-                const isOpen = event.currentTarget.open;
-                setRightRailAccordionState((prev) => ({
-                  ...prev,
-                  coWatch: isOpen,
-                }));
-              }}
-            >
-              <summary className="accordion-summary">
-                <strong className="type-panel-header text-primary">Co-watch</strong>
-                <span className="subtle type-meta text-muted">
-                  Co-watch: {coWatchSectionSummary}
-                </span>
-              </summary>
-              <p className="subtle type-body text-secondary">
-                Synchronized media viewing in this channel.
-              </p>
-              <div className="inline-form co-watch-transport-row">
-                <button
-                  type="button"
-                  className="btn btn-primary btn-auto"
-                  onClick={() => {
-                    const video = watchVideoRef.current;
-                    if (!video || !activeChannelId) {
-                      return;
-                    }
-                    sendWatchStateEvent('watch:pause', !video.paused, video.currentTime);
-                  }}
-                  disabled={!coWatchState || !canControlCoWatch}
-                >
-                  {coWatchState?.paused ? 'Play' : 'Pause'}
-                </button>
-              </div>
-              {coWatchLocalMedia && (
-                <p className="subtle type-meta text-muted">
-                  Loaded local media: {coWatchLocalMedia.fileName}
-                </p>
-              )}
-              {coWatchState && (
-                <video
-                  ref={watchVideoRef}
-                  controls
-                  playsInline
-                  onPause={() => {
-                    if (!canControlCoWatch || coWatchSuppressSyncRef.current) {
-                      return;
-                    }
-                    const video = watchVideoRef.current;
-                    if (video) {
-                      sendWatchStateEvent('watch:pause', true, video.currentTime);
-                    }
-                  }}
-                  onPlay={() => {
-                    if (!canControlCoWatch || coWatchSuppressSyncRef.current) {
-                      return;
-                    }
-                    const video = watchVideoRef.current;
-                    if (video) {
-                      sendWatchStateEvent('watch:pause', false, video.currentTime);
-                    }
-                  }}
-                  onSeeked={() => {
-                    if (!canControlCoWatch || coWatchSuppressSyncRef.current) {
-                      return;
-                    }
-                    const video = watchVideoRef.current;
-                    if (video) {
-                      sendWatchStateEvent('watch:seek', video.paused, video.currentTime);
-                    }
-                  }}
-                />
-              )}
-            </details>
-
-            <details
-              className="voice-panel highlight-panel rail-panel collapsible-panel accordion-panel"
-              data-priority="collapsible"
-              open={rightRailAccordionState.highlights}
-              onToggle={(event) => {
-                const isOpen = event.currentTarget.open;
-                setRightRailAccordionState((prev) => ({
-                  ...prev,
-                  highlights: isOpen,
-                }));
-              }}
-            >
-              <summary className="accordion-summary">
-                <strong className="type-section-header text-primary">Highlights</strong>
-                <span className="subtle type-meta text-muted">
-                  Highlights: {highlightsSectionSummary}
-                </span>
-              </summary>
-              <label className="control-toggle-row">
-                <input
-                  type="checkbox"
-                  checked={highlightCaptureEnabled}
-                  onChange={(event) => setHighlightCaptureEnabled(event.target.checked)}
-                />
-                I consent to local rolling capture of recent voice/screen moments.
-              </label>
-              <p className="subtle type-meta text-muted diagnostic-copy">
-                Status:{' '}
-                {highlightRecorderState === 'buffering'
-                  ? 'recording (rolling 30s)'
-                  : highlightRecorderState}
-              </p>
-              <p className="subtle type-meta text-muted diagnostic-copy">
-                Privacy: clips are temporary in memory and replaced after 30 seconds until you save.
-              </p>
-              <label className="control-toggle-row">
-                <input
-                  type="checkbox"
-                  checked={highlightUploadOnSave}
-                  onChange={(event) => setHighlightUploadOnSave(event.target.checked)}
-                />
-                Upload saved clip to this channel as an attachment.
-              </label>
-              <button
-                type="button"
-                className="btn btn-primary btn-auto"
-                onClick={() => void saveHighlightClip()}
-                disabled={
-                  !highlightCaptureEnabled ||
-                  highlightRecorderState === 'saving' ||
-                  !activeChannelId
-                }
-              >
-                {highlightRecorderState === 'saving' ? 'Saving clip…' : 'Save last 30 seconds'}
-              </button>
-            </details>
-
-            <details
-              className="voice-panel rail-panel collapsible-panel accordion-panel"
-              data-priority="collapsible"
-              open={rightRailAccordionState.playfulAudio}
-              onToggle={(event) => {
-                const isOpen = event.currentTarget.open;
-                setRightRailAccordionState((prev) => ({
-                  ...prev,
-                  playfulAudio: isOpen,
-                }));
-              }}
-            >
-              <summary className="accordion-summary">
-                <strong className="type-section-header text-primary">Playful audio</strong>
-                <span className="subtle type-meta text-muted">
-                  Playful audio: {playfulAudioSummary}
-                </span>
-              </summary>
-              <div className="voice-panel-actions">
-                <label>
-                  Voice effect
-                  <select
-                    className="input input-default control-full"
-                    value={selectedVoiceEffect}
-                    disabled={!activeServer?.voiceEffectsEnabled}
-                    onChange={(event) => {
-                      const effect = event.target.value as VoiceEffectMode;
-                      setSelectedVoiceEffect(effect);
-                      if (
-                        socketRef.current &&
-                        socketRef.current.readyState === WebSocket.OPEN &&
-                        activeChannelId
-                      ) {
-                        socketRef.current.send(
-                          JSON.stringify({
-                            type: 'voice:effect-state',
-                            payload: { channelId: activeChannelId, effect },
-                          }),
-                        );
-                      }
-                    }}
-                  >
-                    <option value="none">None</option>
-                    <option value="robot">Robot</option>
-                    <option value="megaphone">Megaphone</option>
-                    <option value="pitch-shift">Pitch shift</option>
-                  </select>
-                </label>
-                <div className="voice-panel-actions">
-                  {SOUNDBOARD_CLIPS.map((clip) => (
-                    <button
-                      key={clip.id}
-                      type="button"
-                      className="btn btn-success btn-auto"
-                      disabled={
-                        !activeServer?.soundboardEnabled || voiceChannelId !== activeChannelId
-                      }
-                      onClick={() => playBuiltInClip(clip.id)}
-                    >
-                      {clip.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </details>
-
-            <details
-              className="voice-panel rail-panel advanced-panel accordion-panel"
-              data-priority="advanced"
-              open={rightRailAccordionState.advanced}
-              onToggle={(event) => {
-                const isOpen = event.currentTarget.open;
-                setRightRailAccordionState((prev) => ({
-                  ...prev,
-                  advanced: isOpen,
-                }));
-              }}
-            >
-              <summary className="accordion-summary">
-                <strong className="type-section-header text-primary">Advanced</strong>
-                <span className="subtle type-meta text-muted">
-                  screen presets, internals, custom clip
-                </span>
-              </summary>
-              <div className="share-consent-card">
-                <p className="subtle type-meta text-muted diagnostic-copy">
-                  Browser consent: <strong>{screenConsentState}</strong> · In-app consent:{' '}
-                  <strong>{activeScreenShare ? 'active' : 'not sharing'}</strong>
-                </p>
-                <label className="screen-preset-control">
-                  Screen preset
-                  <select
-                    className="input input-default control-full"
-                    value={screenContentType}
-                    onChange={(event) =>
-                      setScreenContentType(event.target.value as ScreenContentType)
-                    }
-                  >
-                    <option value="text">Text/code (8fps · 0.6Mbps)</option>
-                    <option value="mixed">Mixed content (15fps · 1.2Mbps)</option>
-                    <option value="motion">Motion/video (30fps · 2.5Mbps)</option>
-                  </select>
-                </label>
-                <p className="subtle diagnostic-copy">
-                  Network adaptation: <strong>{screenNetworkQuality}</strong> (packet loss + RTT
-                  aware)
-                </p>
-                <p className="subtle diagnostic-copy">
-                  Topology: P2P up to {SCREEN_P2P_PARTICIPANT_THRESHOLD} participants. Planned SFU
-                  migration above this threshold.
-                </p>
-                {screenShareScopeWarning && (
-                  <p className="subtle diagnostic-copy">{screenShareScopeWarning}</p>
-                )}
-                {(currentMember ? !currentMember.canShareScreen : false) && (
-                  <p className="subtle diagnostic-copy">
-                    Role gate active: you do not have the "Can share screen" permission.
-                  </p>
-                )}
-              </div>
-              <div className="inline-form co-watch-source-row">
-                <input
-                  className="input input-default control-full"
-                  value={coWatchUrlInput}
-                  onChange={(event) => setCoWatchUrlInput(event.target.value)}
-                  placeholder="Paste media URL"
-                />
-                <button
-                  type="button"
-                  className="btn btn-primary btn-auto"
-                  onClick={() =>
-                    startCoWatchFromMedia({
-                      sourceType: 'url',
-                      url: coWatchUrlInput.trim(),
-                      title: coWatchUrlInput.trim(),
-                    })
-                  }
-                  disabled={!coWatchUrlInput.trim() || !activeChannelId || !canControlCoWatch}
-                >
-                  Load URL
-                </button>
-                <input
-                  className="input input-compact control-file"
-                  type="file"
-                  accept="video/*,audio/*"
-                  onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    if (!file) {
-                      return;
-                    }
-
-                    if (coWatchLocalMedia?.objectUrl) {
-                      URL.revokeObjectURL(coWatchLocalMedia.objectUrl);
-                    }
-
-                    const objectUrl = URL.createObjectURL(file);
-                    setCoWatchLocalMedia({ fileName: file.name, objectUrl });
-                    startCoWatchFromMedia({
-                      sourceType: 'upload',
-                      url: objectUrl,
-                      title: file.name,
-                    });
-                  }}
-                  disabled={!activeChannelId || !canControlCoWatch}
-                />
-              </div>
-              <div className="inline-form co-watch-transport-row">
-                <button
-                  type="button"
-                  className="btn btn-primary btn-auto"
-                  onClick={() => {
-                    const video = watchVideoRef.current;
-                    if (!video || !canControlCoWatch) {
-                      return;
-                    }
-                    sendWatchStateEvent(
-                      'watch:seek',
-                      video.paused,
-                      Math.max(0, video.currentTime - 10),
-                    );
-                  }}
-                  disabled={!coWatchState || !canControlCoWatch}
-                >
-                  -10s
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-primary btn-auto"
-                  onClick={() => {
-                    const video = watchVideoRef.current;
-                    if (!video || !canControlCoWatch) {
-                      return;
-                    }
-                    sendWatchStateEvent('watch:seek', video.paused, video.currentTime + 10);
-                  }}
-                  disabled={!coWatchState || !canControlCoWatch}
-                >
-                  +10s
-                </button>
-                {coWatchState &&
-                  coWatchState.hostUserId === auth.user.id &&
-                  voiceParticipants.find((participant) => participant.userId !== auth.user.id) && (
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-auto"
-                      onClick={() => {
-                        const target = voiceParticipants.find(
-                          (participant) => participant.userId !== auth.user.id,
-                        );
-                        if (!target || !activeChannelId) {
-                          return;
-                        }
-
-                        coWatchSend({
-                          type: 'watch:transfer-host',
-                          payload: { channelId: activeChannelId, targetUserId: target.userId },
-                        });
-                      }}
-                    >
-                      Transfer host
-                    </button>
-                  )}
-                {coWatchState && coWatchState.hostUserId === auth.user.id && (
-                  <label className="control-toggle-row">
-                    <input
-                      type="checkbox"
-                      checked={coWatchAllowOthersControl}
-                      onChange={(event) => {
-                        const checked = event.target.checked;
-                        setCoWatchAllowOthersControl(checked);
-                        const controllers = checked
-                          ? voiceParticipants
-                              .map((participant) => participant.userId)
-                              .filter((userId) => userId !== auth.user.id)
-                          : [];
-                        coWatchSend({
-                          type: 'watch:set-permissions',
-                          payload: { channelId: activeChannelId, controllers },
-                        });
-                      }}
-                    />
-                    Allow others to control
-                  </label>
-                )}
-              </div>
-              <div className="voice-panel-actions">
-                <label>
-                  Custom clip
-                  <input
-                    type="file"
-                    accept="audio/*"
-                    onChange={(event) =>
-                      void handleCustomSoundUpload(event.target.files?.[0] ?? null)
-                    }
-                  />
-                </label>
-                <button
-                  type="button"
-                  className="btn btn-success btn-auto"
-                  onClick={playCustomClip}
-                  disabled={!customSoundboardClip || !activeServer?.soundboardEnabled}
-                >
-                  Play upload
-                </button>
-              </div>
-              {isServerOwner &&
-                activeScreenShare &&
-                activeScreenShare.presenter.userId !== auth.user.id && (
-                  <button
-                    type="button"
-                    className="btn btn-danger btn-auto"
-                    onClick={forceStopScreenShare}
-                  >
-                    Force stop share
-                  </button>
-                )}
-              <div
-                className="voice-controls rail-panel collapsible-panel"
-                data-priority="collapsible"
-              >
-                <label>
-                  Mic gain {inputGain}%
-                  <input
-                    type="range"
-                    min={0}
-                    max={200}
-                    value={inputGain}
-                    onChange={(event) => setInputGain(Number(event.target.value))}
-                  />
-                </label>
-                <div className="subtle type-meta text-muted diagnostic-copy">
-                  Join success: {voiceDashboard.joinSuccessRate.toFixed(0)}% · Median setup:{' '}
-                  {voiceDashboard.medianSetupMs.toFixed(0)}ms
-                </div>
-              </div>
-              <div
-                className="voice-participants rail-panel collapsible-panel"
-                data-priority="collapsible"
-              >
-                {voiceParticipants
-                  .filter((participant) => participant.userId !== auth.user.id)
-                  .map((participant) => (
-                    <span key={participant.userId} className="voice-chip">
-                      {participant.username}
-                      {(activeEffectByUserId[participant.userId] ??
-                        participant.activeVoiceEffect ??
-                        'none') !== 'none' && (
-                        <small className="subtle type-meta text-muted">
-                          fx:
-                          {activeEffectByUserId[participant.userId] ??
-                            participant.activeVoiceEffect}
-                        </small>
-                      )}
-                      <strong className="voice-state">
-                        {peerStateByUserId[participant.userId] ?? 'connecting'}
-                      </strong>
-                      {speakingByUserId[participant.userId] && (
-                        <span className="speaking-dot" aria-label="speaking" />
-                      )}
-                      <label className="voice-volume">
-                        Vol
-                        <input
-                          type="range"
-                          min={0}
-                          max={150}
-                          value={outputVolumeByUserId[participant.userId] ?? 100}
-                          onChange={(event) =>
-                            setOutputVolumeByUserId((prev) => ({
-                              ...prev,
-                              [participant.userId]: Number(event.target.value),
-                            }))
-                          }
-                        />
-                      </label>
-                    </span>
-                  ))}
-                {voiceChannelId === activeChannelId && voiceParticipants.length <= 1 && (
-                  <span className="subtle type-meta text-muted">No other participants yet.</span>
-                )}
-              </div>
-              <p className="subtle diagnostic-copy">
-                Disconnect causes:{' '}
-                {Object.entries(voiceDashboard.disconnectCauses)
-                  .map(([cause, count]) => `${cause}: ${count}`)
-                  .join(', ') || 'none'}
-              </p>
-            </details>
-
-          </aside>
-
-          <section className="primary-task">
-            <form
-              className="inline-form search-bar"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void runSearch(null, [null]);
-              }}
-            >
+            <div className="chat-topbar-actions">
               <input
-                className="input input-default control-full"
+                className="chat-search"
+                type="search"
                 value={searchQuery}
                 onChange={(event) => setSearchQuery(event.target.value)}
-                placeholder={chatMode === 'dm' ? 'Search DMs' : 'Search channel messages'}
-                aria-label="Search messages"
+                placeholder="Search"
               />
-              <button type="submit" className="btn btn-primary btn-auto" disabled={isSearching}>
-                {isSearching ? 'Searching...' : 'Search'}
-              </button>
-              {showingSearchResults && (
-                <button
-                  type="button"
-                  className="btn btn-ghost btn-auto"
-                  onClick={() => {
-                    setSearchQuery('');
-                    setSearchResults([]);
-                    setSearchNextCursor(null);
-                    setSearchCursorTrail([null]);
-                    setSearchError(null);
-                  }}
-                >
-                  Clear
-                </button>
-              )}
-            </form>
-            {showingSearchResults && (
-              <div className="search-pagination">
-                <button
-                  type="button"
-                  className="btn btn-ghost btn-auto"
-                  onClick={() => {
-                    if (searchCursorTrail.length <= 1) {
-                      return;
-                    }
-                    const previousTrail = searchCursorTrail.slice(0, -1);
-                    const previousCursor = previousTrail[previousTrail.length - 1] ?? null;
-                    void runSearch(previousCursor, previousTrail);
-                  }}
-                  disabled={isSearching || searchCursorTrail.length <= 1}
-                >
-                  Previous
-                </button>
-                <span className="subtle type-meta text-muted">Page {searchCursorTrail.length}</span>
-                <button
-                  type="button"
-                  className="btn btn-ghost btn-auto"
-                  onClick={() => {
-                    if (!searchNextCursor) {
-                      return;
-                    }
-                    const nextTrail = [...searchCursorTrail, searchNextCursor];
-                    void runSearch(searchNextCursor, nextTrail);
-                  }}
-                  disabled={isSearching || !searchNextCursor}
-                >
-                  Next
-                </button>
-              </div>
-            )}
-            {searchError && <p className="error">{searchError}</p>}
-
-            <section className="chat-box" aria-label="Messages">
-              {activeScreenShare && activeScreenShare.channelId === activeChannelId && (
-                <article className="screen-share-card">
-                  <header>
-                    <strong>{activeScreenShare.presenter.username}</strong>
-                    <span className="subtle type-meta text-secondary">is sharing their screen</span>
-                  </header>
-                  <video
-                    ref={remoteScreenVideoRef}
-                    autoPlay
-                    muted={activeScreenShare.presenter.userId === auth.user.id}
-                    playsInline
-                  />
-                </article>
-              )}
-              {chatMode === 'channel' && !activeChannelId && (
-                <p className="empty">Pick a channel to start chatting.</p>
-              )}
-              {chatMode === 'dm' && !activeDmThreadId && (
-                <p className="empty">Select a DM thread.</p>
-              )}
-              {((chatMode === 'channel' && activeChannelId) ||
-                (chatMode === 'dm' && activeDmThreadId)) &&
-                displayedMessages.length === 0 && (
-                  <p className="empty">
-                    {showingSearchResults ? 'No matching messages.' : 'No messages yet.'}
-                  </p>
-                )}
-              {displayedMessages.map((message) => (
-                <article key={message.id} className="message">
-                  <header>
-                    <strong>{'user' in message ? message.user : message.senderUsername}</strong>
-                    <time className="type-meta text-muted">
-                      {new Date(message.createdAt).toLocaleTimeString()}
-                    </time>
-                    {'editedAt' in message && message.editedAt && (
-                      <span className="subtle type-meta text-muted">(edited)</span>
-                    )}
-                  </header>
-                  {'user' in message && editingMessageId === message.id ? (
-                    <form
-                      className="inline-form"
-                      onSubmit={(event) => {
-                        event.preventDefault();
-                        void editMessage(message.id);
-                      }}
-                    >
-                      <input
-                        className="input input-default control-full"
-                        aria-label="Edit message"
-                        value={editDraft}
-                        maxLength={300}
-                        onChange={(event) => setEditDraft(event.target.value)}
-                      />
-                      <button type="submit" className="btn btn-primary btn-auto">
-                        Save
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn-ghost btn-auto"
-                        onClick={() => {
-                          setEditingMessageId(null);
-                          setEditDraft('');
-                        }}
-                      >
-                        Cancel
-                      </button>
-                    </form>
-                  ) : (
-                    <p className="type-body text-primary">
-                      {renderMessageText(message.text, auth.user.username)}
-                    </p>
-                  )}
-                  {'attachments' in message && message.attachments.length > 0 && (
-                    <div className="attachment-grid">
-                      {message.attachments.map((attachment) => {
-                        const attachmentUrl = `${apiBase}${attachment.url}`;
-                        const isClip =
-                          attachment.mimeType === 'video/webm' ||
-                          attachment.fileName.startsWith('highlight-');
-                        if (isClip) {
-                          return (
-                            <article key={attachment.id} className="attachment-card file clip-card">
-                              <strong>🎞️ Highlight clip</strong>
-                              <video controls preload="metadata" src={attachmentUrl} />
-                              <a
-                                href={attachmentUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                                download={attachment.fileName}
-                              >
-                                Download {attachment.fileName}
-                              </a>
-                            </article>
-                          );
-                        }
-
-                        return (
-                          <a
-                            key={attachment.id}
-                            className={
-                              attachment.category === 'image'
-                                ? 'attachment-card image'
-                                : 'attachment-card file'
-                            }
-                            href={attachmentUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                            download={attachment.fileName}
-                          >
-                            {attachment.category === 'image' ? (
-                              <img src={attachmentUrl} alt={attachment.fileName} />
-                            ) : (
-                              <span className="file-attachment-label">
-                                {attachmentIcon(attachment.category)} {attachment.fileName}
-                              </span>
-                            )}
-                          </a>
-                        );
-                      })}
-                    </div>
-                  )}
-                  {'user' in message && chatMode === 'channel' && (
-                    <div className="message-actions">
-                      <button
-                        type="button"
-                        className="btn btn-ghost btn-auto"
-                        onClick={() => reportMessage(message.id)}
-                      >
-                        Report
-                      </button>
-                      {message.userId === auth.user.id && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setEditingMessageId(message.id);
-                            setEditDraft(message.text);
-                          }}
-                        >
-                          Edit
-                        </button>
-                      )}
-                      {(message.userId === auth.user.id || isServerOwner) && (
-                        <button
-                          type="button"
-                          className="btn btn-danger btn-auto"
-                          onClick={() => deleteMessage(message.id)}
-                        >
-                          Delete
-                        </button>
-                      )}
-                      {message.userId === null && (
-                        <>
-                          <button
-                            type="button"
-                            className="btn btn-ghost btn-auto"
-                            onClick={() => void copyTextToClipboard(message.id, message.text)}
-                          >
-                            {copiedAiMessageId === message.id ? 'Copied' : 'Copy'}
-                          </button>
-                          {aiRequestIdByMessageId[message.id] && (
-                            <button
-                              type="button"
-                              className="btn btn-primary btn-auto"
-                              onClick={() => retryAiPrompt(aiRequestIdByMessageId[message.id])}
-                            >
-                              Retry
-                            </button>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  )}
-                </article>
-              ))}
-
-              {shouldShowStreamingAiReply && streamingAiReply && (
-                <article className="message" aria-live="polite">
-                  <header>
-                    <strong>{streamingAiReply.botDisplayName}</strong>
-                    <span className="subtle type-meta text-secondary">replying…</span>
-                  </header>
-                  <p className="type-body text-primary">{streamingAiReply.text || '…'}</p>
-                </article>
-              )}
-            </section>
-
-            {chatMode === 'channel' && (
-              <p className="typing-indicator" aria-live="polite">
-                {typingUsers.length === 1 && `${typingUsers[0].username} is typing...`}
-                {typingUsers.length > 1 &&
-                  `${typingUsers
-                    .slice(0, 2)
-                    .map((user) => user.username)
-                    .join(
-                      ', ',
-                    )}${typingUsers.length > 2 ? ` +${typingUsers.length - 2} others` : ''} are typing...`}
-                {typingUsers.length === 0 && '\u00A0'}
-              </p>
-            )}
-
-            <form
-              className="composer"
-              onSubmit={(event) => {
-                event.preventDefault();
-                sendMessage();
-              }}
-            >
-              <input
-                className="input input-default"
-                value={draft}
-                onChange={(event) => {
-                  const nextValue = event.target.value;
-                  setDraft(nextValue);
-
-                  if (chatMode !== 'channel') {
-                    return;
-                  }
-
-                  const socket = socketRef.current;
-                  if (!socket || socket.readyState !== WebSocket.OPEN || !activeChannelId) {
-                    return;
-                  }
-
-                  if (!nextValue.trim()) {
-                    sendTypingStop(activeChannelId);
-                    lastSentChannelTextRef.current = nextValue;
-                    return;
-                  }
-
-                  if (!isTypingRef.current) {
-                    socket.send(
-                      JSON.stringify({
-                        type: 'typing:start',
-                        payload: { channelId: activeChannelId },
-                      }),
-                    );
-                    isTypingRef.current = true;
-                  }
-
-                  queueTypingStop();
-                }}
-                onBlur={() => sendTypingStop()}
-                placeholder={
-                  chatMode === 'dm'
-                    ? activeDmThreadId
-                      ? 'Type a DM'
-                      : 'Select a DM thread'
-                    : activeChannelId
-                      ? 'Type a message'
-                      : 'Select a channel first'
-                }
-                aria-label="Message"
-                maxLength={300}
-              />
-              {chatMode === 'channel' && (
-                <label className="btn btn-secondary btn-auto upload-button upload-control">
-                  Attach
-                  <input
-                    type="file"
-                    accept="*/*"
-                    onChange={(event) => {
-                      const file = event.target.files?.[0];
-                      event.currentTarget.value = '';
-                      if (!file) {
-                        return;
-                      }
-
-                      void uploadAttachment(file);
-                    }}
-                    hidden
-                  />
-                </label>
-              )}
               <button
-                type="submit"
-                className="btn btn-primary btn-auto"
-                disabled={
-                  connectionState !== 'open' ||
-                  (!draft.trim() &&
-                    pendingAttachmentUploads.filter((item) => item.status === 'uploaded').length ===
-                      0) ||
-                  (chatMode === 'dm' ? !activeDmThreadId : !activeChannelId)
-                }
+                type="button"
+                className="member-toggle"
+                onClick={() => setActiveAuxRailTab((prev) => (prev === 'right' ? 'none' : 'right'))}
+                aria-label="Toggle member list"
               >
-                Send
+                ☰
               </button>
-            </form>
-            {chatMode === 'channel' && pendingAttachmentUploads.length > 0 && (
-              <div className="attachment-grid pending-uploads">
-                {pendingAttachmentUploads.map((item) => (
-                  <figure key={item.localId}>
-                    {item.previewUrl ? (
-                      <img src={item.previewUrl} alt={item.fileName} />
-                    ) : (
-                      <div className="pending-file-icon">{attachmentIcon(item.category)}</div>
+            </div>
+          </header>
+
+          <div className="message-list" aria-live="polite">
+            {visibleMessages.map((message, index) => {
+              const previous = visibleMessages[index - 1];
+              const grouped = Boolean(previous && previous.user === message.user);
+              return (
+                <article key={message.id} className={grouped ? 'message-row grouped' : 'message-row'}>
+                  {!grouped && <div className="message-avatar">{message.user.slice(0, 1).toUpperCase()}</div>}
+                  <div className="message-content">
+                    {!grouped && (
+                      <header>
+                        <strong>{message.user}</strong>
+                        <time dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleTimeString()}</time>
+                      </header>
                     )}
-                    <figcaption>{item.fileName}</figcaption>
-                    <figcaption>
-                      {item.status === 'failed' ? 'failed' : `${item.progress}%`}
-                    </figcaption>
-                  </figure>
-                ))}
-              </div>
-            )}
-          </section>
+                    <p>{message.text}</p>
+                    <div className="message-hover-actions" aria-hidden="true">
+                      <span>🙂</span>
+                      <span>↩</span>
+                      <span>⋯</span>
+                    </div>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+
+          <form
+            className="chat-input-wrap"
+            onSubmit={(event: FormEvent) => {
+              event.preventDefault();
+              sendMessage();
+            }}
+          >
+            <button type="button" className="composer-icon" onClick={() => composerFileInputRef.current?.click()}>
+              +
+            </button>
+            <input
+              className="chat-input"
+              value={messageInput}
+              onChange={(event) => setMessageInput(event.target.value)}
+              placeholder={`Message #${channels.find((channel) => channel.id === activeChannelId)?.name ?? 'channel'}`}
+            />
+            <button type="button" className="composer-icon">😊</button>
+            <input
+              ref={composerFileInputRef}
+              type="file"
+              className="visually-hidden"
+              onChange={(event) => {
+                void onAttachmentFileChange(event);
+              }}
+            />
+          </form>
         </section>
 
-        <aside className="app-rail context-rail">
-          {settingsMenuOpen && (
-          <section className="sidebar rail-panel collapsible-panel" data-priority="collapsible">
-            <h3 className="type-section-header text-primary">
-              AI Settings <span className="panel-priority">collapsible</span>
-            </h3>
-            {activeServerAiDraft ? (
-              <form
-                className="ai-settings-panel"
-                onSubmit={(event) => void saveActiveServerAiSettings(event)}
-              >
-                <div className="inline-form">
-                  <input
-                    className="input input-default control-full"
-                    type="password"
-                    value={openAiApiKeyInput}
-                    onChange={(event) => setOpenAiApiKeyInput(event.target.value)}
-                    placeholder="Paste OpenAI API key"
-                  />
-                  <button type="button" className="btn btn-secondary btn-auto" onClick={() => void saveOpenAiApiKey()}>
-                    Save key
-                  </button>
-                </div>
-                <div className="subtle type-meta text-muted">
-                  API key is applied to this running backend instance.
-                </div>
-                <div className="ai-status-badges">
-                  <span
-                    className={
-                      activeServerAiDraft.status.enabled ? 'status-badge success' : 'status-badge'
-                    }
-                  >
-                    enabled
-                  </span>
-                  <span
-                    className={
-                      activeServerAiDraft.status.keyMissing ? 'status-badge danger' : 'status-badge'
-                    }
-                  >
-                    key missing
-                  </span>
-                  <span
-                    className={
-                      activeServerAiDraft.status.budgetReached
-                        ? 'status-badge danger'
-                        : 'status-badge'
-                    }
-                  >
-                    budget reached
-                  </span>
-                  <span
-                    className={
-                      activeServerAiDraft.status.degradedMode
-                        ? 'status-badge warning'
-                        : 'status-badge'
-                    }
-                  >
-                    degraded mode
-                  </span>
-                </div>
-                <label className="control-toggle-row">
-                  <span className="subtle type-meta text-secondary">Enable assistant</span>
-                  <input
-                    type="checkbox"
-                    checked={activeServerAiDraft.enabled}
-                    disabled={!isServerOwner}
-                    onChange={(event) =>
-                      updateActiveServerAiDraft({ enabled: event.target.checked })
-                    }
-                  />
-                </label>
-                <label>
-                  <span className="subtle type-meta text-secondary">Model</span>
-                  <select
-                    className="input input-default control-full"
-                    value={activeServerAiDraft.model}
-                    disabled={!isServerOwner}
-                    onChange={(event) => updateActiveServerAiDraft({ model: event.target.value })}
-                  >
-                    {AI_MODEL_OPTIONS.map((model) => (
-                      <option key={model} value={model}>
-                        {model}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  <span className="subtle type-meta text-secondary">System prompt</span>
-                  <textarea
-                    className="input input-default control-full"
-                    rows={4}
-                    value={activeServerAiDraft.systemPrompt ?? ''}
-                    readOnly={!isServerOwner}
-                    onChange={(event) =>
-                      updateActiveServerAiDraft({
-                        systemPrompt:
-                          event.target.value.trim().length > 0 ? event.target.value : null,
-                      })
-                    }
-                  />
-                </label>
-                <label>
-                  <span className="subtle type-meta text-secondary">Temperature</span>
-                  <input
-                    className="input input-default control-full"
-                    type="number"
-                    min={0}
-                    max={2}
-                    step={0.1}
-                    value={activeServerAiDraft.temperature ?? 0.7}
-                    readOnly={!isServerOwner}
-                    onChange={(event) =>
-                      updateActiveServerAiDraft({ temperature: Number(event.target.value) || 0 })
-                    }
-                  />
-                </label>
-                <label>
-                  <span className="subtle type-meta text-secondary">Max reply length (tokens)</span>
-                  <input
-                    className="input input-default control-full"
-                    type="number"
-                    min={1}
-                    value={activeServerAiDraft.maxTokensPerReply ?? 512}
-                    readOnly={!isServerOwner}
-                    onChange={(event) =>
-                      updateActiveServerAiDraft({
-                        maxTokensPerReply: Number(event.target.value) || 1,
-                      })
-                    }
-                  />
-                </label>
-                <label>
-                  <span className="subtle type-meta text-secondary">Who can invoke AI</span>
-                  <select
-                    className="input input-default control-full"
-                    value={activeServerAiDraft.invocationPolicy}
-                    disabled={!isServerOwner}
-                    onChange={(event) =>
-                      updateActiveServerAiDraft({
-                        invocationPolicy: event.target.value as AiInvocationPolicy,
-                      })
-                    }
-                  >
-                    <option value="everyone">Everyone</option>
-                    <option value="roles">Roles (coming soon)</option>
-                  </select>
-                </label>
-                {isServerOwner ? (
-                  <button type="submit" className="btn btn-primary control-full">
-                    Save AI settings
-                  </button>
-                ) : (
-                  <small className="subtle type-meta text-muted">Owner-only settings</small>
-                )}
-              </form>
-            ) : (
-              <p className="subtle type-meta text-muted">No AI settings loaded.</p>
-            )}
-          </section>
-          )}
-
-          <section className="sidebar rail-panel always-visible" data-priority="always-visible">
-            <h3 className="type-section-header text-primary">
-              Members <span className="panel-priority">always visible</span>
-            </h3>
-            {isServerOwner && activeServer && (
-              <div className="voice-panel-actions">
-                <button
-                  type="button"
-                  className="btn btn-primary btn-auto"
-                  onClick={() =>
-                    void authedFetch(`/servers/${activeServer.id}/audio-settings`, {
-                      method: 'PATCH',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({
-                        soundboardEnabled: !activeServer.soundboardEnabled,
-                        voiceEffectsEnabled: activeServer.voiceEffectsEnabled,
-                      }),
-                    }).then(async (res) => {
-                      if (!res.ok) return;
-                      const data = (await res.json()) as { server: ServerSummary };
-                      setServers((current) =>
-                        current.map((entry) => (entry.id === data.server.id ? data.server : entry)),
-                      );
-                    })
-                  }
-                >
-                  Soundboard: {activeServer.soundboardEnabled ? 'On' : 'Off'}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-primary btn-auto"
-                  onClick={() =>
-                    void authedFetch(`/servers/${activeServer.id}/audio-settings`, {
-                      method: 'PATCH',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({
-                        soundboardEnabled: activeServer.soundboardEnabled,
-                        voiceEffectsEnabled: !activeServer.voiceEffectsEnabled,
-                      }),
-                    }).then(async (res) => {
-                      if (!res.ok) return;
-                      const data = (await res.json()) as { server: ServerSummary };
-                      setServers((current) =>
-                        current.map((entry) => (entry.id === data.server.id ? data.server : entry)),
-                      );
-                    })
-                  }
-                >
-                  Voice effects: {activeServer.voiceEffectsEnabled ? 'On' : 'Off'}
-                </button>
-              </div>
-            )}
-            <div className="list members-list">
-              {members.map((member) => {
-                const isOnline = Boolean(
-                  activeServerId &&
-                  (onlineUserIdsByServer[activeServerId] ?? []).includes(member.userId),
-                );
-                return (
-                  <div key={member.userId} className="member-row">
-                    <span
-                      className={isOnline ? 'presence-dot online' : 'presence-dot offline'}
-                      aria-hidden="true"
-                    />
-                    <span className="type-body text-primary">{member.username}</span>
-                    <small className="subtle type-meta text-muted">{member.role}</small>
-                    {!member.canShareScreen && (
-                      <small className="subtle type-meta text-muted">no-share</small>
-                    )}
-                    {isServerOwner && member.userId !== auth.user.id && (
-                      <>
-                        {member.isMuted ? (
-                          <button
-                            type="button"
-                            className="btn btn-ghost btn-auto"
-                            onClick={() => unmuteMember(member.userId)}
-                          >
-                            Unmute
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            className="btn btn-ghost btn-auto"
-                            onClick={() => muteMember(member.userId)}
-                          >
-                            Mute
-                          </button>
-                        )}
-                        <label className="control-toggle-row subtle type-meta text-secondary">
-                          <input
-                            type="checkbox"
-                            checked={member.canShareScreen}
-                            onChange={(event) =>
-                              void updateMemberPermission(member.userId, event.target.checked)
-                            }
-                          />
-                          can-share
-                        </label>
-                      </>
-                    )}
-                  </div>
-                );
-              })}
-              {members.length === 0 && <p className="empty">No members yet.</p>}
-            </div>
-          </section>
-
-          {settingsMenuOpen && (
-          <details
-            className="sidebar rail-panel advanced-panel"
-            data-priority="advanced"
-            open={false}
-          >
-            <summary className="type-section-header text-primary">
-              Diagnostics & status internals <span className="panel-priority">advanced</span>
-            </summary>
-            <section className="notification-settings rail-stack">
-              <label className="control-toggle-row">
-                <input
-                  type="checkbox"
-                  checked={desktopNotificationsEnabled}
-                  onChange={(event) => {
-                    void toggleDesktopNotifications(event.target.checked);
-                  }}
-                />
-                Enable desktop notifications
-              </label>
-              <label className="control-toggle-row">
-                <input
-                  type="checkbox"
-                  checked={spatialAudioEnabled}
-                  disabled={!spatialAudioAvailable}
-                  onChange={(event) => setSpatialAudioEnabled(event.target.checked)}
-                />
-                Enable spatial audio
-              </label>
-              {!spatialAudioAvailable && (
-                <small className="subtle type-meta text-muted">
-                  Spatial audio unavailable in this browser.
-                </small>
-              )}
-            </section>
-            <div className="list">
-              {auditLogs.map((log) => (
-                <div key={log.id} className="member-row">
-                  <span className="type-meta text-muted">{log.action}</span>
-                  <small className="type-meta text-muted">{log.actorUsername}</small>
+        <aside className={activeAuxRailTab === 'right' ? 'member-sidebar visible' : 'member-sidebar'}>
+          <div className="member-section">
+            <p className="member-section-label">ONLINE</p>
+            {members
+              .filter((member) =>
+                Boolean(activeServerId && (onlineUserIdsByServer[activeServerId] ?? []).includes(member.userId)),
+              )
+              .map((member) => (
+                <div key={member.userId} className="member-item">
+                  <div className="member-avatar">{member.username.slice(0, 1).toUpperCase()}</div>
+                  <span>{member.username}</span>
+                  <span className="presence-dot online" aria-hidden="true" />
                 </div>
               ))}
-              {auditLogs.length === 0 && <p className="empty">No moderation events.</p>}
-            </div>
-          </details>
-          )}
+          </div>
+          <div className="member-section">
+            <p className="member-section-label">OFFLINE</p>
+            {members
+              .filter(
+                (member) =>
+                  !Boolean(activeServerId && (onlineUserIdsByServer[activeServerId] ?? []).includes(member.userId)),
+              )
+              .map((member) => (
+                <div key={member.userId} className="member-item">
+                  <div className="member-avatar">{member.username.slice(0, 1).toUpperCase()}</div>
+                  <span>{member.username}</span>
+                  <span className="presence-dot offline" aria-hidden="true" />
+                </div>
+              ))}
+          </div>
         </aside>
       </section>
     </main>

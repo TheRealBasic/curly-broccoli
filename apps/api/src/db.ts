@@ -1082,6 +1082,32 @@ export async function addMemberByUsername(serverId: string, username: string, ac
   return { userId: user.id, username: user.username };
 }
 
+export async function joinServerByName(serverName: string, userId: string) {
+  const normalizedName = serverName.trim();
+  if (!normalizedName) {
+    return null;
+  }
+
+  const result = await pool.query<{ id: string }>(
+    `
+      SELECT id
+      FROM servers
+      WHERE lower(name) = lower($1)
+      ORDER BY created_at ASC
+      LIMIT 1;
+    `,
+    [normalizedName],
+  );
+
+  const server = result.rows[0];
+  if (!server) {
+    return null;
+  }
+
+  await addServerMembership(server.id, userId, 'member');
+  return server.id;
+}
+
 export async function createMessageAttachment(attachment: {
   id: string;
   uploadedByUserId: string;

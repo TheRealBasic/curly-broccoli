@@ -18,6 +18,7 @@ import { isAiEnabledForServer, isAiGlobalKillSwitchEnabled } from './ai/rollout.
 import { verifyAccessToken } from './auth.js';
 import {
   addMemberByUsername,
+  joinServerByName,
   addServerMembership,
   canAccessChannel,
   canManageScreenShare,
@@ -101,6 +102,7 @@ const app = createApp({
   listChannelsForServer,
   createChannel,
   addMemberByUsername,
+  joinServerByName,
   listServerMembers,
   createOrGetDmThread,
   listDmThreadsForUser,
@@ -123,6 +125,12 @@ const app = createApp({
     sendToUserConnections(userId, {
       type: 'notification:unread-updated',
       payload: { summary },
+    });
+  },
+  notifyServerInvite: ({ userId, serverId, serverName, invitedByUserId, invitedByUsername }) => {
+    sendToUserConnections(userId, {
+      type: 'notification:server-invite',
+      payload: { serverId, serverName, invitedByUserId, invitedByUsername },
     });
   },
 });

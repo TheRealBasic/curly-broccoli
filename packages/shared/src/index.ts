@@ -315,6 +315,15 @@ export type ServerEvent =
       };
     }
   | {
+      type: 'notification:server-invite';
+      payload: {
+        serverId: string;
+        serverName: string;
+        invitedByUserId: string;
+        invitedByUsername: string;
+      };
+    }
+  | {
       type: 'presence:sync';
       payload: { serverId: string; onlineUserIds: string[] };
     }
